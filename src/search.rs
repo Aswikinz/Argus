@@ -101,9 +101,11 @@ impl SearchEngine {
 
         // Get final results and stats
         let mut final_results = Arc::try_unwrap(results)
-            .unwrap_or_else(|arc| (*arc.lock().unwrap()).clone());
+            .map(|mutex| mutex.into_inner().unwrap())
+            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
         let mut final_stats = Arc::try_unwrap(stats)
-            .unwrap_or_else(|arc| (*arc.lock().unwrap()).clone());
+            .map(|mutex| mutex.into_inner().unwrap())
+            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
 
         // Sort results by match count (descending)
         final_results.sort();
@@ -251,14 +253,9 @@ impl SearchEngine {
         let mut matches = Vec::new();
         let lines: Vec<&str> = text.lines().collect();
 
-        for (line_idx, line) in lines.iter().enumerate() {
+        for line in lines.iter() {
             for mat in regex.find_iter(line) {
-                matches.push(Match::new(
-                    Some(line_idx + 1),
-                    Some(mat.start()),
-                    mat.as_str().to_string(),
-                    line.to_string(),
-                ));
+                matches.push(Match::new(mat.as_str().to_string(), line.to_string()));
             }
         }
 
@@ -270,7 +267,7 @@ impl SearchEngine {
         let mut matches = Vec::new();
         let lines: Vec<&str> = text.lines().collect();
 
-        for (line_idx, line) in lines.iter().enumerate() {
+        for line in lines.iter() {
             let search_line = if self.config.case_sensitive {
                 line.to_string()
             } else {
@@ -288,12 +285,7 @@ impl SearchEngine {
                 let actual_pos = start + pos;
                 let matched_text = &line[actual_pos..actual_pos + pattern.len()];
 
-                matches.push(Match::new(
-                    Some(line_idx + 1),
-                    Some(actual_pos),
-                    matched_text.to_string(),
-                    line.to_string(),
-                ));
+                matches.push(Match::new(matched_text.to_string(), line.to_string()));
 
                 start = actual_pos + 1;
                 if start >= search_line.len() {
@@ -304,19 +296,6 @@ impl SearchEngine {
 
         matches
     }
-}
-
-/// Quick search function for simple use cases.
-pub fn quick_search(directory: &str, pattern: &str) -> Result<Vec<SearchResult>, String> {
-    let config = SearchConfig {
-        directory: PathBuf::from(directory),
-        pattern: pattern.to_string(),
-        ..Default::default()
-    };
-
-    let engine = SearchEngine::new(config).map_err(|e| e.to_string())?;
-    let (results, _) = engine.search();
-    Ok(results)
 }
 
 #[cfg(test)]

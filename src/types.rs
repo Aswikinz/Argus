@@ -93,10 +93,6 @@ impl fmt::Display for FileType {
 /// Represents a single match within a file.
 #[derive(Debug, Clone)]
 pub struct Match {
-    /// The line number where the match was found (1-indexed).
-    pub line_number: Option<usize>,
-    /// The column/character offset within the line.
-    pub column: Option<usize>,
     /// The matched text content.
     pub matched_text: String,
     /// Context around the match (the full line or surrounding text).
@@ -105,15 +101,8 @@ pub struct Match {
 
 impl Match {
     /// Create a new match.
-    pub fn new(
-        line_number: Option<usize>,
-        column: Option<usize>,
-        matched_text: String,
-        context: String,
-    ) -> Self {
+    pub fn new(matched_text: String, context: String) -> Self {
         Self {
-            line_number,
-            column,
             matched_text,
             context,
         }
@@ -131,8 +120,6 @@ pub struct SearchResult {
     pub matches: Vec<Match>,
     /// Confidence score (0.0 - 1.0).
     pub confidence: f64,
-    /// File size in bytes.
-    pub file_size: u64,
     /// Error message if extraction partially failed.
     pub error: Option<String>,
 }
@@ -146,7 +133,6 @@ impl SearchResult {
             file_type,
             matches,
             confidence,
-            file_size,
             error: None,
         }
     }
@@ -158,7 +144,6 @@ impl SearchResult {
             file_type,
             matches: Vec::new(),
             confidence: 0.0,
-            file_size: 0,
             error: Some(error),
         }
     }

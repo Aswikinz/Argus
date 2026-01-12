@@ -287,24 +287,6 @@ pub fn is_binary_file(path: &Path) -> bool {
     false
 }
 
-/// Get supported file extensions.
-pub fn get_supported_extensions() -> Vec<&'static str> {
-    vec![
-        // Text
-        "txt", "md", "markdown", "rst", "log", "csv", "tsv", "json", "yaml", "yml", "toml", "ini",
-        "cfg", "conf", "xml", "html", "htm", "css",
-        // Code
-        "rs", "py", "js", "ts", "jsx", "tsx", "java", "c", "cpp", "cc", "cxx", "h", "hpp", "go",
-        "rb", "php", "swift", "kt", "kts", "scala", "sh", "bash", "zsh", "fish", "ps1", "bat",
-        "cmd", "sql", "r", "lua", "pl", "pm", "ex", "exs", "erl", "hrl", "hs", "lhs", "ml", "mli",
-        "fs", "fsi", "fsx", "clj", "cljs", "cljc", "nim", "zig", "v", "d", "dart", "vue", "svelte",
-        // Documents
-        "pdf", "docx",
-        // Images (for OCR)
-        "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "webp",
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

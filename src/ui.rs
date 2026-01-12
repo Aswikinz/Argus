@@ -2,7 +2,6 @@
 
 use crate::types::{SearchResult, SearchStats};
 use colored::*;
-use console::Term;
 use dialoguer::{theme::ColorfulTheme, Select};
 use std::io::{self, Write};
 
@@ -13,9 +12,6 @@ const BAR_WIDTH: usize = 12;
 
 /// Display the search results in a beautiful format.
 pub fn display_results(results: &[SearchResult], stats: &SearchStats, show_preview: bool) {
-    let term = Term::stdout();
-    let _ = term.clear_screen();
-
     // Header
     println!();
     println!(
@@ -299,29 +295,6 @@ pub fn display_banner() {
             .bright_white()
             .italic()
     );
-    println!();
-}
-
-/// Display help information.
-pub fn display_help() {
-    println!();
-    println!(
-        "  {} {}",
-        "📖".bright_white(),
-        "USAGE:".bright_cyan().bold()
-    );
-    println!("     argus [OPTIONS] <PATTERN>");
-    println!();
-    println!(
-        "  {} {}",
-        "🔍".bright_white(),
-        "EXAMPLES:".bright_cyan().bold()
-    );
-    println!("     argus \"TODO\"                    Search for TODO in current directory");
-    println!("     argus -d /path/to/project \"fn\"  Search in specific directory");
-    println!("     argus -r \"\\bfn\\s+\\w+\"           Use regex pattern");
-    println!("     argus -e pdf,docx \"report\"      Search only in PDF and DOCX files");
-    println!("     argus -o \"text in image\"        Enable OCR for images");
     println!();
 }
 

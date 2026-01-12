@@ -201,36 +201,54 @@ fn extract_text_from_docx_xml(xml: &str) -> String {
 }
 
 /// Extract text from an image using OCR (Tesseract).
+/// Uses thread-local Tesseract instances for better performance with parallel processing.
 #[cfg(feature = "ocr")]
 fn extract_image_ocr(path: &Path) -> ExtractionResult {
     use leptess::LepTess;
+    use std::cell::RefCell;
 
-    // Initialize Tesseract
-    let mut lt = match LepTess::new(None, "eng") {
-        Ok(lt) => lt,
-        Err(e) => {
-            return ExtractionResult::failure(format!("Failed to initialize Tesseract: {}", e))
-        }
-    };
-
-    // Set the image
-    if let Err(e) = lt.set_image(path) {
-        return ExtractionResult::failure(format!("Failed to load image for OCR: {}", e));
+    // Thread-local Tesseract instance to avoid re-initialization overhead
+    thread_local! {
+        static TESSERACT: RefCell<Option<LepTess>> = RefCell::new(None);
     }
 
-    // Get text
-    match lt.get_utf8_text() {
-        Ok(text) => {
-            let cleaned = text
-                .lines()
-                .map(|l| l.trim())
-                .filter(|l| !l.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            ExtractionResult::success(cleaned)
+    TESSERACT.with(|cell| {
+        let mut tess_opt = cell.borrow_mut();
+
+        // Initialize Tesseract if not already done for this thread
+        if tess_opt.is_none() {
+            match LepTess::new(None, "eng") {
+                Ok(lt) => *tess_opt = Some(lt),
+                Err(e) => {
+                    return ExtractionResult::failure(format!(
+                        "Failed to initialize Tesseract: {}",
+                        e
+                    ))
+                }
+            }
         }
-        Err(e) => ExtractionResult::failure(format!("OCR extraction failed: {}", e)),
-    }
+
+        let lt = tess_opt.as_mut().unwrap();
+
+        // Set the image
+        if let Err(e) = lt.set_image(path) {
+            return ExtractionResult::failure(format!("Failed to load image for OCR: {}", e));
+        }
+
+        // Get text
+        match lt.get_utf8_text() {
+            Ok(text) => {
+                let cleaned = text
+                    .lines()
+                    .map(|l| l.trim())
+                    .filter(|l| !l.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ExtractionResult::success(cleaned)
+            }
+            Err(e) => ExtractionResult::failure(format!("OCR extraction failed: {}", e)),
+        }
+    })
 }
 
 /// Stub for OCR when feature is disabled.

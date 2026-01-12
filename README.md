@@ -9,7 +9,7 @@ Named after Argus Panoptes, the all-seeing giant from Greek mythology, **Argus**
 - **Beautiful CLI**: Colorful output with file type icons, confidence bars, and match highlighting
 - **Interactive Selection**: Navigate results with arrow keys and open files instantly
 - **Regex Support**: Full regex pattern matching when you need precise searches
-- **OCR Capability**: Extract and search text from images using Tesseract (optional feature)
+- **OCR Capability**: Extract and search text from images using Tesseract with optimized parallel processing (optional feature)
 - **Cross-Platform**: Works on Linux and Windows
 
 ## Installation
@@ -154,8 +154,9 @@ src/
 
 1. **Use extension filters** (`-e`) when you know the file types
 2. **Set max depth** (`--max-depth`) for large directory trees
-3. **Avoid OCR** unless needed (it's slower than text extraction)
-4. **Use literal search** instead of regex when possible
+3. **Use literal search** instead of regex when possible
+4. **OCR Performance**: When OCR is enabled, Argus uses thread-local Tesseract instances to avoid re-initialization overhead, enabling efficient parallel image processing across multiple CPU cores
+5. **Faster OCR models**: Install `tesseract-langpack-eng-fast` (Fedora) or equivalent for ~2-3x faster OCR with slightly lower accuracy
 
 ## Troubleshooting
 

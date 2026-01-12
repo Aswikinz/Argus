@@ -214,8 +214,7 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
     };
 
     // Set the image
-    let path_str = path.to_string_lossy();
-    if let Err(e) = lt.set_image(&path_str) {
+    if let Err(e) = lt.set_image(path) {
         return ExtractionResult::failure(format!("Failed to load image for OCR: {}", e));
     }
 

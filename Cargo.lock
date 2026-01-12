@@ -110,6 +110,7 @@ dependencies = [
  "indicatif",
  "infer",
  "leptess",
+ "libc",
  "opener",
  "pathdiff",
  "pdf-extract",

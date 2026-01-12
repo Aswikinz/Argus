@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "text-processing"]
 
 [features]
 default = []
-ocr = ["leptess"]
+ocr = ["leptess", "libc"]
 
 [[bin]]
 name = "argus"
@@ -44,6 +44,7 @@ quick-xml = "0.31"
 
 # OCR (optional)
 leptess = { version = "0.14", optional = true }
+libc = { version = "0.2", optional = true }
 
 # Image handling
 image = "0.24"

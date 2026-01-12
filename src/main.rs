@@ -119,8 +119,8 @@ fn main() {
     // Check OCR availability
     #[cfg(not(feature = "ocr"))]
     if cli.ocr {
-        ui::display_warning(
-            "OCR feature not compiled. Rebuild with: cargo build --release --features ocr",
+        eprintln!(
+            "  \x1b[33m⚠️  Warning: OCR feature not compiled. Rebuild with: cargo build --release --features ocr\x1b[0m"
         );
     }
 
@@ -156,6 +156,8 @@ fn main() {
 
     // Skip interactive mode if non-interactive flag is set
     if cli.non_interactive {
+        #[cfg(feature = "ocr")]
+        suppress_stderr();
         return;
     }
 
@@ -172,6 +174,25 @@ fn main() {
                 // User chose to exit
                 println!("\n  {} Goodbye!\n", "👋".bright_white());
                 break;
+            }
+        }
+    }
+
+    // Suppress Tesseract cleanup warnings by redirecting stderr before exit
+    #[cfg(feature = "ocr")]
+    suppress_stderr();
+}
+
+/// Redirect stderr to /dev/null to suppress third-party library warnings at exit.
+#[cfg(feature = "ocr")]
+fn suppress_stderr() {
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::os::unix::io::AsRawFd;
+        if let Ok(devnull) = File::open("/dev/null") {
+            unsafe {
+                libc::dup2(devnull.as_raw_fd(), 2);
             }
         }
     }

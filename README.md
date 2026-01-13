@@ -18,7 +18,7 @@ Named after Argus Panoptes, the all-seeing giant from Greek mythology, **Argus**
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/argus.git
+git clone https://github.com/Aswikinz/Argus.git
 cd argus
 
 # Build without OCR (faster build, smaller binary)

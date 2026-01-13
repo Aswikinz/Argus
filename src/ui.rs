@@ -24,7 +24,7 @@ pub fn display_results(results: &[SearchResult], stats: &SearchStats, show_previ
         "{}  {}  {}",
         "║".bright_cyan().bold(),
         "👁️  ARGUS - The All-Seeing Search Tool".bright_white().bold(),
-        "                        ║".bright_cyan().bold()
+        "                         ║".bright_cyan().bold()
     );
     println!(
         "{}",

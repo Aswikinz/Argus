@@ -22,32 +22,26 @@ path = "src/main.rs"
 clap = { version = "4.4", features = ["derive", "color"] }
 
 # Async runtime
-tokio = { version = "1.35", features = ["full"] }
 
 # File walking
 walkdir = "2.4"
-ignore = "0.4"
 
 # Colors and terminal UI
 colored = "2.1"
-console = "0.15"
-indicatif = { version = "0.17", features = ["tokio"] }
+indicatif = "0.17"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 
 # PDF extraction
 pdf-extract = "0.7"
 
 # DOCX extraction
-docx-rs = "0.4"
 zip = "0.6"
-quick-xml = "0.31"
 
 # OCR (optional)
 leptess = { version = "0.14", optional = true }
 libc = { version = "0.2", optional = true }
 
 # Image handling
-image = "0.24"
 
 # File opening
 opener = "0.6"
@@ -57,13 +51,11 @@ regex = "1.10"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
 
 # Parallel processing
 rayon = "1.8"
 
 # Path handling
-pathdiff = "0.2"
 
 # Encoding detection
 encoding_rs = "0.8"
@@ -77,3 +69,6 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+tempfile = "3.24.0"

@@ -165,7 +165,7 @@ impl SearchEngine {
 
                 match file_type {
                     FileType::Pdf | FileType::Docx => true,
-                    FileType::Image => self.config.ocr_enabled,
+                    FileType::Image => self.config.ocr.enabled,
                     _ => !is_binary_file(e.path()),
                 }
             })
@@ -175,6 +175,11 @@ impl SearchEngine {
 
     /// Check if a directory entry should be processed.
     fn should_process_entry(&self, entry: &DirEntry) -> bool {
+        // Always process the root directory
+        if entry.depth() == 0 {
+            return true;
+        }
+
         let name = entry.file_name().to_string_lossy();
 
         // Skip hidden files/directories unless configured to include them
@@ -218,7 +223,7 @@ impl SearchEngine {
         let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
 
         // Extract text
-        let extraction = extract_text(path, file_type, self.config.ocr_enabled);
+        let extraction = extract_text(path, file_type, self.config.ocr.enabled);
 
         if !extraction.success {
             return Some(SearchResult::with_error(

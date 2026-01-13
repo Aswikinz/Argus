@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::process;
 
 use search::SearchEngine;
-use types::SearchConfig;
+use types::{OcrConfig, SearchConfig};
 use ui::{display_banner, display_error, display_results, flush, interactive_select, open_file};
 
 /// Argus - The All-Seeing File Search Tool
@@ -130,7 +130,10 @@ fn main() {
         pattern: cli.pattern,
         case_sensitive: cli.case_sensitive,
         use_regex: cli.regex,
-        ocr_enabled: cli.ocr,
+        ocr: OcrConfig {
+            enabled: cli.ocr,
+            ..OcrConfig::default()
+        },
         limit: cli.limit,
         max_depth: cli.max_depth,
         include_hidden: cli.hidden,

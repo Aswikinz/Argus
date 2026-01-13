@@ -14,24 +14,6 @@ const BAR_WIDTH: usize = 12;
 pub fn display_results(results: &[SearchResult], stats: &SearchStats, show_preview: bool) {
     // Header
     println!();
-    println!(
-        "{}",
-        "╔══════════════════════════════════════════════════════════════════╗"
-            .bright_cyan()
-            .bold()
-    );
-    println!(
-        "{}  {}  {}",
-        "║".bright_cyan().bold(),
-        "👁️  ARGUS - The All-Seeing Search Tool".bright_white().bold(),
-        "                         ║".bright_cyan().bold()
-    );
-    println!(
-        "{}",
-        "╚══════════════════════════════════════════════════════════════════╝"
-            .bright_cyan()
-            .bold()
-    );
     println!();
 
     // Stats summary
@@ -281,7 +263,7 @@ pub fn display_banner() {
     );
     println!(
         "    {}",
-        "The All-Seeing File Search Tool"
+        "Advanced File Search Utility"
             .bright_white()
             .italic()
     );

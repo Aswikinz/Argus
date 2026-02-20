@@ -231,55 +231,13 @@ impl PartialOrd for SearchResult {
 /// OCR configuration options for Tesseract.
 #[derive(Debug, Clone)]
 pub struct OcrConfig {
-    /// Whether OCR is enabled for images.
+    /// Whether OCR is enabled for images and scanned PDFs.
     pub enabled: bool,
-    /// Language model to use (e.g., "eng", "eng_fast", "deu").
-    pub language: String,
-    /// Page Segmentation Mode (PSM):
-    /// 0 = OSD only, 1 = Auto + OSD, 3 = Auto (default), 6 = Uniform block,
-    /// 7 = Single line, 8 = Single word, 11 = Sparse text, 13 = Raw line
-    pub psm: Option<u8>,
-    /// OCR Engine Mode (OEM):
-    /// 0 = Legacy only, 1 = LSTM only (fast), 2 = Legacy + LSTM, 3 = Default
-    pub oem: Option<u8>,
-    /// DPI for image processing (higher = better quality, slower).
-    pub dpi: Option<u32>,
-    /// Character whitelist (only recognize these characters).
-    pub whitelist: Option<String>,
-    /// Preprocessing: auto-scale images larger than this dimension.
-    pub max_image_dimension: Option<u32>,
-    /// Enable fast mode (uses eng_fast if available, PSM 6, OEM 1).
-    pub fast_mode: bool,
 }
 
 impl Default for OcrConfig {
     fn default() -> Self {
-        Self {
-            enabled: false,
-            language: "eng".to_string(),
-            psm: None,
-            oem: None,
-            dpi: None,
-            whitelist: None,
-            max_image_dimension: None,
-            fast_mode: false,
-        }
-    }
-}
-
-impl OcrConfig {
-    /// Create a fast OCR configuration optimized for speed.
-    pub fn fast() -> Self {
-        Self {
-            enabled: true,
-            language: "eng".to_string(),
-            psm: Some(6),  // Uniform block - fastest
-            oem: Some(1),  // LSTM only - faster than combined
-            dpi: None,
-            whitelist: None,
-            max_image_dimension: Some(2000),
-            fast_mode: true,
-        }
+        Self { enabled: false }
     }
 }
 

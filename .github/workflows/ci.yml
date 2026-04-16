@@ -44,13 +44,15 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Run clippy (default features)
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
       - name: Install Tesseract (for ocr feature)
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr libtesseract-dev libleptonica-dev clang
       - name: Run clippy (ocr feature)
-        run: cargo clippy --all-targets --features ocr -- -D warnings
+        run: cargo clippy --locked --all-targets --features ocr -- -D warnings
+      - name: Run clippy (ocrs feature)
+        run: cargo clippy --locked --all-targets --features ocrs -- -D warnings
 
   test:
     name: Test - ${{ matrix.os }} / ${{ matrix.rust }}
@@ -72,9 +74,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
       - name: Test (default features)
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
 
   test-ocr:
     name: Test - OCR feature
@@ -90,9 +92,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr libtesseract-dev libleptonica-dev clang
       - name: Build with OCR feature
-        run: cargo build --features ocr --verbose
+        run: cargo build --locked --features ocr --verbose
       - name: Test with OCR feature
-        run: cargo test --features ocr --verbose
+        run: cargo test --locked --features ocr --verbose
+
+  test-ocrs:
+    name: Test - ocrs (ONNX) feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build with ocrs feature
+        run: cargo build --locked --features ocrs --verbose
+      # Unit tests for the ocrs backend do not hit the network — they only
+      # exercise path resolution and error reporting.
+      - name: Test with ocrs feature
+        run: cargo test --locked --features ocrs --verbose
 
   docs:
     name: Docs
@@ -108,7 +126,7 @@ jobs:
       - name: Build docs
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps --all-features
+        run: cargo doc --locked --no-deps --all-features
 
   msrv:
     name: MSRV check (1.82)
@@ -121,7 +139,7 @@ jobs:
           toolchain: "1.82"
       - uses: Swatinem/rust-cache@v2
       - name: Build on MSRV
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
 
   audit:
     name: Security audit

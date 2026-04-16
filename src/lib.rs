@@ -6,6 +6,8 @@
 
 pub mod extractors;
 pub mod index;
+#[cfg(feature = "ocrs")]
+pub mod ocrs_backend;
 pub mod search;
 pub mod types;
 pub mod ui;

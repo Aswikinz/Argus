@@ -227,12 +227,59 @@ impl PartialOrd for SearchResult {
     }
 }
 
-/// OCR configuration options for Tesseract.
+/// Which OCR backend to use for text extraction from images.
+///
+/// `Tesseract` is the fast, native C++ engine via `leptess`.
+/// `Ocrs` is a pure-Rust ONNX-based engine with higher accuracy on modern
+/// documents, at the cost of a one-time model download (~25 MB).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OcrEngine {
+    /// Traditional Tesseract engine (feature = "ocr").
+    Tesseract,
+    /// ONNX-based ocrs engine (feature = "ocrs").
+    Ocrs,
+}
+
+impl Default for OcrEngine {
+    // Derived-Default cannot express this feature-gated choice, so we
+    // implement it manually and silence clippy's derivable-impls lint.
+    #[allow(clippy::derivable_impls)]
+    fn default() -> Self {
+        // Default to Tesseract when compiled in, else ocrs. If neither feature
+        // is enabled the field is still populated but OCR paths short-circuit
+        // with "backend not compiled" errors.
+        #[cfg(feature = "ocr")]
+        {
+            OcrEngine::Tesseract
+        }
+        #[cfg(all(not(feature = "ocr"), feature = "ocrs"))]
+        {
+            OcrEngine::Ocrs
+        }
+        #[cfg(not(any(feature = "ocr", feature = "ocrs")))]
+        {
+            OcrEngine::Tesseract
+        }
+    }
+}
+
+impl fmt::Display for OcrEngine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OcrEngine::Tesseract => write!(f, "tesseract"),
+            OcrEngine::Ocrs => write!(f, "ocrs"),
+        }
+    }
+}
+
+/// OCR configuration options.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct OcrConfig {
     /// Whether OCR is enabled for images.
     pub enabled: bool,
+    /// Which backend to use for OCR.
+    pub engine: OcrEngine,
     /// Language model to use (e.g., "eng", "eng_fast", "deu").
     pub language: String,
     /// Page Segmentation Mode (PSM):
@@ -256,6 +303,7 @@ impl Default for OcrConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            engine: OcrEngine::default(),
             language: "eng".to_string(),
             psm: None,
             oem: None,
@@ -273,6 +321,7 @@ impl OcrConfig {
     pub fn fast() -> Self {
         Self {
             enabled: true,
+            engine: OcrEngine::default(),
             language: "eng".to_string(),
             psm: Some(6), // Uniform block - fastest
             oem: Some(1), // LSTM only - faster than combined

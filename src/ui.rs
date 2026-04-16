@@ -1,177 +1,182 @@
-//! User interface for displaying results and interactive selection.
+//! Terminal UI rendered in the MUJI aesthetic.
+//!
+//! Design principles:
+//! - Simplicity: only essential information is shown.
+//! - Whitespace: breathing room between sections instead of dividers.
+//! - Neutral palette: muted grays with a single restrained accent.
+//! - No emoji or bright colors — data speaks for itself.
 
 use crate::types::{SearchResult, SearchStats};
-use colored::*;
-use dialoguer::{theme::ColorfulTheme, Select};
+use colored::Colorize;
+use dialoguer::{theme::SimpleTheme, Select};
 use std::io::{self, Write};
 
-/// Characters for the confidence bar.
-const BAR_FILLED: char = '█';
-const BAR_EMPTY: char = '░';
-const BAR_WIDTH: usize = 12;
+const BAR_FILLED: char = '━';
+const BAR_EMPTY: char = '─';
+const BAR_WIDTH: usize = 10;
+const PATH_MAX_WIDTH: usize = 68;
+const PREVIEW_MAX_WIDTH: usize = 72;
 
-/// Display the search results in a beautiful format.
+/// MUJI-inspired palette. Kept private — UI rendering is the only caller.
+pub(crate) mod palette {
+    use colored::{ColoredString, Colorize};
+
+    /// Primary text — deep warm gray.
+    pub fn text(s: &str) -> ColoredString {
+        s.truecolor(42, 42, 40)
+    }
+
+    /// Secondary text — medium gray, for labels and metadata.
+    pub fn secondary(s: &str) -> ColoredString {
+        s.truecolor(122, 122, 120)
+    }
+
+    /// Tertiary text — light gray, for paths and de-emphasized elements.
+    pub fn tertiary(s: &str) -> ColoredString {
+        s.truecolor(191, 191, 189)
+    }
+
+    /// Muted green accent — highlights, positive signals.
+    pub fn accent(s: &str) -> ColoredString {
+        s.truecolor(139, 155, 126)
+    }
+
+    /// Muted terracotta — errors and alerts.
+    pub fn alert(s: &str) -> ColoredString {
+        s.truecolor(201, 122, 106)
+    }
+}
+
+/// Display the full result set with stats header.
 pub fn display_results(results: &[SearchResult], stats: &SearchStats, show_preview: bool) {
-    // Header
     println!();
-    println!();
-
-    // Stats summary
     display_stats(stats);
     println!();
 
     if results.is_empty() {
-        println!(
-            "{}",
-            "  No matches found. Try a different search term or directory."
-                .yellow()
-                .italic()
-        );
+        println!("  {}", palette::secondary("no matches"));
         println!();
         return;
     }
 
-    // Results
     println!(
-        "  {} {}",
-        "Found".bright_green(),
-        format!("{} files with matches:", results.len())
-            .bright_white()
-            .bold()
+        "  {}",
+        palette::secondary(&format!("{} files", results.len()))
     );
     println!();
 
     for (idx, result) in results.iter().enumerate() {
         display_result(idx + 1, result, show_preview);
     }
-
-    println!();
 }
 
-/// Display search statistics.
+/// Display the stats summary line in MUJI form.
 fn display_stats(stats: &SearchStats) {
-    let duration = if stats.duration_ms < 1000 {
-        format!("{}ms", stats.duration_ms)
-    } else {
-        format!("{:.2}s", stats.duration_ms as f64 / 1000.0)
-    };
+    let duration = format_duration(stats.duration_ms);
 
     println!(
-        "  {} {} {} {} {} {} {} {} {} {}",
-        "📊".bright_white(),
-        "Stats:".dimmed(),
-        stats.files_scanned.to_string().bright_cyan(),
-        "files scanned,".dimmed(),
-        stats.total_matches.to_string().bright_green(),
-        "matches in".dimmed(),
-        stats.files_matched.to_string().bright_yellow(),
-        "files".dimmed(),
-        "•".dimmed(),
-        duration.bright_magenta()
+        "  {}   scanned {}   matched {}   {}",
+        palette::secondary("stats"),
+        palette::text(&stats.files_scanned.to_string()),
+        palette::text(&stats.files_matched.to_string()),
+        palette::secondary(&duration),
     );
 
-    // Show breakdown by file type if there are results
     if !stats.by_type.is_empty() {
-        let type_breakdown: Vec<String> = stats
-            .by_type
+        let mut entries: Vec<_> = stats.by_type.iter().collect();
+        entries.sort_by_key(|(_, count)| std::cmp::Reverse(**count));
+        let breakdown: Vec<String> = entries
             .iter()
-            .map(|(ft, count)| format!("{} {}: {}", ft.icon(), ft, count))
+            .map(|(ft, count)| {
+                format!(
+                    "{} {}",
+                    palette::text(&count.to_string()),
+                    palette::secondary(&ft.to_string().to_lowercase())
+                )
+            })
             .collect();
-
-        println!(
-            "  {} {}",
-            "📁".bright_white(),
-            type_breakdown.join(" • ").dimmed()
-        );
+        println!("          {}", breakdown.join("   "));
     }
 }
 
-/// Display a single search result.
-fn display_result(rank: usize, result: &SearchResult, show_preview: bool) {
-    // Rank indicator with special colors for top 3
-    let rank_str = match rank {
-        1 => format!("#{rank}").bright_yellow().bold(),
-        2 => format!("#{rank}").white().bold(),
-        3 => format!("#{rank}").truecolor(205, 127, 50).bold(), // Bronze
-        _ => format!("#{rank}").dimmed(),
-    };
-
-    // File type icon and filename
-    let icon = result.file_type.icon();
-    let filename = result.filename();
-
-    // Color the filename based on file type
-    let colored_filename = match result.file_type.color() {
-        "cyan" => filename.bright_cyan().bold(),
-        "red" => filename.bright_red().bold(),
-        "blue" => filename.bright_blue().bold(),
-        "magenta" => filename.bright_magenta().bold(),
-        _ => filename.bright_white().bold(),
-    };
-
-    // Match count
-    let match_count = format!("{} matches", result.match_count());
-
-    // Confidence bar
-    let confidence_bar = create_confidence_bar(result.confidence);
-    let confidence_pct = format!("{:.0}%", result.confidence * 100.0);
-
-    // File path (relative if possible)
-    let path_str = result.path.to_string_lossy();
-    let display_path = if path_str.chars().count() > 60 {
-        let truncated: String = path_str
-            .chars()
-            .skip(path_str.chars().count() - 57)
-            .collect();
-        format!("...{truncated}")
+/// Format a duration (ms) into a MUJI-friendly `Nms` / `N.NNs` label.
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
     } else {
-        path_str.to_string()
+        format!("{:.2}s", ms as f64 / 1000.0)
+    }
+}
+
+/// Display a single result.
+fn display_result(rank: usize, result: &SearchResult, show_preview: bool) {
+    let filename = result.filename();
+    let rank_str = format!("{rank:>2}");
+
+    let name_styled = if rank <= 3 {
+        palette::text(&filename).bold()
+    } else {
+        palette::text(&filename)
     };
 
-    // Print the result
+    let match_count = format!("{} matches", result.match_count());
+    let bar = create_confidence_bar(result.confidence);
+    let pct = format!("{:>3}%", (result.confidence * 100.0).round() as u32);
+
+    println!("  {}   {}", palette::secondary(&rank_str), name_styled,);
+
     println!(
-        "  {} {} {} {} {} {}",
-        rank_str,
-        icon,
-        colored_filename,
-        "•".dimmed(),
-        match_count.bright_green(),
-        format!("[{confidence_bar} {confidence_pct}]").dimmed()
+        "       {}   {}   {}",
+        palette::secondary(&match_count),
+        bar,
+        palette::secondary(&pct),
     );
 
-    println!("     {} {}", "📍".dimmed(), display_path.dimmed());
+    println!(
+        "       {}",
+        palette::tertiary(&truncate_path(&result.path.to_string_lossy()))
+    );
 
-    // Show preview if enabled
     if show_preview {
-        if let Some(preview) = result.preview(80) {
+        if let Some(preview) = result.preview(PREVIEW_MAX_WIDTH) {
             let highlighted = highlight_match(&preview, &result.matches[0].matched_text);
-            println!("     {} {}", "💬".dimmed(), highlighted.italic());
+            println!("       {highlighted}");
         }
     }
 
     println!();
 }
 
-/// Create a visual confidence bar.
-fn create_confidence_bar(confidence: f64) -> String {
-    let filled = (confidence * BAR_WIDTH as f64).round() as usize;
-    let empty = BAR_WIDTH - filled;
-
-    format!(
-        "{}{}",
-        BAR_FILLED.to_string().repeat(filled).bright_green(),
-        BAR_EMPTY.to_string().repeat(empty).dimmed()
-    )
+/// Truncate a long path from the left so the filename remains visible.
+fn truncate_path(path: &str) -> String {
+    let char_count = path.chars().count();
+    if char_count > PATH_MAX_WIDTH {
+        let tail: String = path
+            .chars()
+            .skip(char_count - (PATH_MAX_WIDTH - 3))
+            .collect();
+        format!("...{tail}")
+    } else {
+        path.to_string()
+    }
 }
 
-/// Highlight matched text in a preview string.
+/// Create a two-tone confidence bar using thin rules instead of blocks.
+fn create_confidence_bar(confidence: f64) -> String {
+    let filled = ((confidence * BAR_WIDTH as f64).round() as usize).min(BAR_WIDTH);
+    let empty = BAR_WIDTH - filled;
+
+    let on = BAR_FILLED.to_string().repeat(filled);
+    let off = BAR_EMPTY.to_string().repeat(empty);
+    format!("{}{}", palette::accent(&on), palette::tertiary(&off))
+}
+
+/// Highlight matched text in a preview string using the accent color.
 fn highlight_match(text: &str, pattern: &str) -> String {
-    // Case-insensitive search for highlighting
     let lower_text = text.to_lowercase();
     let lower_pattern = pattern.to_lowercase();
 
     if let Some(byte_pos) = lower_text.find(&lower_pattern) {
-        // Map byte position in lowercase back to char count, then slice original by chars
         let char_start = lower_text[..byte_pos].chars().count();
         let char_len = lower_pattern.chars().count();
 
@@ -181,48 +186,43 @@ fn highlight_match(text: &str, pattern: &str) -> String {
 
         format!(
             "{}{}{}",
-            before.dimmed(),
-            matched.bright_yellow().bold().underline(),
-            after.dimmed()
+            palette::tertiary(&before),
+            palette::accent(&matched).bold(),
+            palette::tertiary(&after),
         )
     } else {
-        text.dimmed().to_string()
+        palette::tertiary(text).to_string()
     }
 }
 
-/// Enter interactive mode for file selection.
+/// Enter interactive selection mode. Uses dialoguer's SimpleTheme to avoid
+/// competing with the MUJI color scheme.
 pub fn interactive_select(results: &[SearchResult]) -> Option<&SearchResult> {
     if results.is_empty() {
         return None;
     }
 
     println!(
-        "{}",
-        "  Use ↑/↓ arrows to navigate, Enter to open, Esc to exit"
-            .bright_cyan()
-            .italic()
+        "  {}",
+        palette::secondary("select · ↑↓ to navigate · enter to open · esc to exit")
     );
     println!();
 
-    // Build selection items
     let mut items: Vec<String> = results
         .iter()
         .enumerate()
         .map(|(idx, r)| {
             format!(
-                "#{:<2} {} {} ({} matches)",
+                "{:>2}  {}  ({} matches)",
                 idx + 1,
-                r.file_type.icon(),
                 r.filename(),
                 r.match_count()
             )
         })
         .collect();
+    items.push("exit".to_string());
 
-    // Add exit option
-    items.push("❌ Exit".to_string());
-
-    let selection = Select::with_theme(&ColorfulTheme::default())
+    let selection = Select::with_theme(&SimpleTheme)
         .items(&items)
         .default(0)
         .interact_opt();
@@ -236,40 +236,31 @@ pub fn interactive_select(results: &[SearchResult]) -> Option<&SearchResult> {
 /// Open a file with the system's default application.
 pub fn open_file(result: &SearchResult) -> io::Result<()> {
     println!(
-        "  {} Opening {}...",
-        "📂".bright_green(),
-        result.filename().bright_white().bold()
+        "  {} {}",
+        palette::secondary("opening"),
+        palette::text(&result.filename())
     );
-
     opener::open(&result.path).map_err(|e| io::Error::other(e.to_string()))
 }
 
-/// Display an error message.
+/// Display an error message in the MUJI alert color.
 pub fn display_error(message: &str) {
-    eprintln!(
-        "\n  {} {} {}\n",
-        "❌".bright_red(),
-        "Error:".bright_red().bold(),
-        message.red()
-    );
+    eprintln!();
+    eprintln!("  {}  {}", palette::alert("error"), palette::text(message));
+    eprintln!();
 }
 
-/// Display the welcome banner.
+/// Display the minimal welcome label.
 pub fn display_banner() {
     println!();
-    println!(
-        "{}",
-        r#"
-     █████╗ ██████╗  ██████╗ ██╗   ██╗███████╗
-    ██╔══██╗██╔══██╗██╔════╝ ██║   ██║██╔════╝
-    ███████║██████╔╝██║  ███╗██║   ██║███████╗
-    ██╔══██║██╔══██╗██║   ██║██║   ██║╚════██║
-    ██║  ██║██║  ██║╚██████╔╝╚██████╔╝███████║
-    ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚══════╝
-    "#
-        .bright_cyan()
-    );
-    println!("    {}", "Advance Search Engine".bright_white().italic());
+    println!("  {}", palette::secondary("argus"));
+    println!();
+}
+
+/// Display a quiet farewell line at the end of an interactive session.
+pub fn display_farewell() {
+    println!();
+    println!("  {}", palette::secondary("bye"));
     println!();
 }
 
@@ -294,7 +285,6 @@ mod tests {
         let bar_zero = create_confidence_bar(0.0);
         let bar_full = create_confidence_bar(1.0);
         let bar_half = create_confidence_bar(0.5);
-        // Strings include color codes, but each must be non-empty and distinct.
         assert!(!bar_zero.is_empty());
         assert!(!bar_full.is_empty());
         assert!(!bar_half.is_empty());
@@ -302,10 +292,41 @@ mod tests {
     }
 
     #[test]
+    fn create_confidence_bar_clamps_above_one() {
+        // Overflow inputs should not panic; they should clamp.
+        let bar = create_confidence_bar(2.5);
+        assert!(!bar.is_empty());
+    }
+
+    #[test]
+    fn truncate_path_keeps_short_paths_intact() {
+        let s = "short.txt";
+        assert_eq!(truncate_path(s), s);
+    }
+
+    #[test]
+    fn truncate_path_shortens_long_paths_with_ellipsis() {
+        let long = "/".to_string() + &"segment/".repeat(20) + "file.txt";
+        let out = truncate_path(&long);
+        assert!(out.starts_with("..."));
+        assert!(out.ends_with("file.txt"));
+        assert!(out.chars().count() <= PATH_MAX_WIDTH);
+    }
+
+    #[test]
+    fn format_duration_under_one_second() {
+        assert_eq!(format_duration(42), "42ms");
+    }
+
+    #[test]
+    fn format_duration_over_one_second() {
+        assert_eq!(format_duration(1500), "1.50s");
+    }
+
+    #[test]
     fn highlight_match_finds_pattern_case_insensitive() {
         let out = highlight_match("Hello NEEDLE world", "needle");
         assert!(!out.is_empty());
-        // Should contain the original casing of the match somewhere in the output.
         assert!(out.contains("NEEDLE"));
     }
 
@@ -325,6 +346,11 @@ mod tests {
     #[test]
     fn display_banner_does_not_panic() {
         display_banner();
+    }
+
+    #[test]
+    fn display_farewell_does_not_panic() {
+        display_farewell();
     }
 
     #[test]

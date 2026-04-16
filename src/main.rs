@@ -3,15 +3,35 @@
 //! A powerful CLI tool for searching text across any file format,
 //! including PDFs, Word documents, images (with OCR), and code files.
 
-use clap::{Parser, ValueHint};
+use clap::{Parser, ValueEnum, ValueHint};
 use std::path::PathBuf;
 use std::process;
 
 use argus::search::SearchEngine;
-use argus::types::{IndexConfig, OcrConfig, SearchConfig};
+use argus::types::{IndexConfig, OcrConfig, OcrEngine, SearchConfig};
 use argus::ui::{
-    display_banner, display_error, display_results, flush, interactive_select, open_file,
+    display_banner, display_error, display_farewell, display_results, flush, interactive_select,
+    open_file,
 };
+
+/// CLI-facing enum for OCR backend selection. Maps onto [`OcrEngine`].
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CliOcrEngine {
+    /// Tesseract via leptess. Fast, low memory, needs the `ocr` feature.
+    Tesseract,
+    /// ocrs ONNX engine. Higher accuracy on modern docs; needs the `ocrs`
+    /// feature. Downloads ~25 MB of models on first use.
+    Ocrs,
+}
+
+impl From<CliOcrEngine> for OcrEngine {
+    fn from(value: CliOcrEngine) -> Self {
+        match value {
+            CliOcrEngine::Tesseract => OcrEngine::Tesseract,
+            CliOcrEngine::Ocrs => OcrEngine::Ocrs,
+        }
+    }
+}
 
 /// Argus - The All-Seeing File Search Tool
 ///
@@ -58,9 +78,13 @@ struct Cli {
     #[arg(short = 's', long = "case-sensitive")]
     case_sensitive: bool,
 
-    /// Enable OCR for images and scanned PDFs (requires Tesseract)
+    /// Enable OCR for images and scanned PDFs
     #[arg(short = 'o', long = "ocr")]
     ocr: bool,
+
+    /// OCR backend to use when --ocr is enabled
+    #[arg(long = "ocr-engine", value_enum, default_value_t = default_cli_engine())]
+    ocr_engine: CliOcrEngine,
 
     /// Use regex pattern matching
     #[arg(short = 'r', long = "regex")]
@@ -130,11 +154,17 @@ fn main() {
     }
 
     // Check OCR availability
-    #[cfg(not(feature = "ocr"))]
     if cli.ocr {
-        eprintln!(
-            "  \x1b[33m⚠️  Warning: OCR feature not compiled. Rebuild with: cargo build --release --features ocr\x1b[0m"
-        );
+        match cli.ocr_engine {
+            CliOcrEngine::Tesseract => {
+                #[cfg(not(feature = "ocr"))]
+                eprintln!("  warning: tesseract OCR not compiled. Rebuild with --features ocr");
+            }
+            CliOcrEngine::Ocrs => {
+                #[cfg(not(feature = "ocrs"))]
+                eprintln!("  warning: ocrs OCR not compiled. Rebuild with --features ocrs");
+            }
+        }
     }
 
     // Build search configuration
@@ -146,6 +176,7 @@ fn main() {
         use_regex: cli.regex,
         ocr: OcrConfig {
             enabled: cli.ocr,
+            engine: cli.ocr_engine.into(),
             ..OcrConfig::default()
         },
         limit: cli.limit,
@@ -195,8 +226,7 @@ fn main() {
                 // Continue the loop to allow selecting another file
                 println!();
             } else {
-                // User chose to exit
-                println!("\n  {} Goodbye!\n", "👋".bright_white());
+                display_farewell();
                 break;
             }
         }
@@ -205,6 +235,22 @@ fn main() {
     // Suppress Tesseract cleanup warnings by redirecting stderr before exit
     #[cfg(feature = "ocr")]
     suppress_stderr();
+}
+
+/// The default OCR engine shown in `--help`, derived from compile features.
+fn default_cli_engine() -> CliOcrEngine {
+    #[cfg(feature = "ocr")]
+    {
+        CliOcrEngine::Tesseract
+    }
+    #[cfg(all(not(feature = "ocr"), feature = "ocrs"))]
+    {
+        CliOcrEngine::Ocrs
+    }
+    #[cfg(not(any(feature = "ocr", feature = "ocrs")))]
+    {
+        CliOcrEngine::Tesseract
+    }
 }
 
 /// Redirect stderr to /dev/null to suppress third-party library warnings at exit.
@@ -221,6 +267,3 @@ fn suppress_stderr() {
         }
     }
 }
-
-// Re-export for use with colored trait
-use colored::Colorize;

@@ -1,6 +1,6 @@
 //! Text extraction from various file formats.
 
-use crate::types::FileType;
+use crate::types::{FileType, OcrConfig, OcrEngine};
 use anyhow::{Context, Result};
 use encoding_rs::UTF_8;
 use encoding_rs_io::DecodeReaderBytesBuilder;
@@ -43,7 +43,7 @@ impl ExtractionResult {
 }
 
 /// Extract text from a file based on its type.
-pub fn extract_text(path: &Path, file_type: FileType, ocr_enabled: bool) -> ExtractionResult {
+pub fn extract_text(path: &Path, file_type: FileType, ocr: &OcrConfig) -> ExtractionResult {
     // Check file size first
     if let Ok(metadata) = path.metadata() {
         if metadata.len() > MAX_FILE_SIZE {
@@ -57,11 +57,11 @@ pub fn extract_text(path: &Path, file_type: FileType, ocr_enabled: bool) -> Extr
 
     match file_type {
         FileType::Text | FileType::Code | FileType::Other => extract_text_file(path),
-        FileType::Pdf => extract_pdf(path, ocr_enabled),
+        FileType::Pdf => extract_pdf(path, ocr),
         FileType::Docx => extract_docx(path),
         FileType::Image => {
-            if ocr_enabled {
-                extract_image_ocr(path)
+            if ocr.enabled {
+                extract_image_ocr(path, ocr.engine)
             } else {
                 ExtractionResult::failure("OCR not enabled for images".to_string())
             }
@@ -111,9 +111,9 @@ fn extract_text_file(path: &Path) -> ExtractionResult {
 }
 
 /// Extract text from a PDF file.
-/// When `ocr_enabled` is true, falls back to OCR on embedded images if text extraction
+/// When `ocr.enabled` is true, falls back to OCR on embedded images if text extraction
 /// yields very little content (indicating a scanned/image-based PDF).
-fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
+fn extract_pdf(path: &Path, ocr: &OcrConfig) -> ExtractionResult {
     // First try normal text extraction
     let text_result = pdf_extract::extract_text(path);
 
@@ -131,7 +131,7 @@ fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
     // A scanned PDF typically yields < 100 chars of garbage from pdf-extract
     let has_substantial_text = cleaned.len() > 100;
 
-    if has_substantial_text || !ocr_enabled {
+    if has_substantial_text || !ocr.enabled {
         if cleaned.is_empty() {
             return ExtractionResult::failure("Failed to extract PDF text".to_string());
         }
@@ -139,9 +139,9 @@ fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
     }
 
     // OCR fallback: try extracting text from embedded images in the PDF
-    #[cfg(feature = "ocr")]
+    #[cfg(any(feature = "ocr", feature = "ocrs"))]
     {
-        let ocr_result = extract_pdf_images_ocr(path);
+        let ocr_result = extract_pdf_images_ocr(path, ocr.engine);
         if ocr_result.success && !ocr_result.text.is_empty() {
             // Combine any sparse text with OCR text
             if cleaned.is_empty() {
@@ -160,11 +160,12 @@ fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
         )
     }
 
-    #[cfg(not(feature = "ocr"))]
+    #[cfg(not(any(feature = "ocr", feature = "ocrs")))]
     {
+        let _ = ocr;
         if cleaned.is_empty() {
             ExtractionResult::failure(
-                "PDF appears to be scanned. Rebuild with --features ocr for OCR support"
+                "PDF appears to be scanned. Rebuild with --features ocr or --features ocrs for OCR support"
                     .to_string(),
             )
         } else {
@@ -175,8 +176,8 @@ fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
 
 /// Extract text from embedded images in a PDF using OCR.
 /// This handles scanned PDFs where pages are stored as images.
-#[cfg(feature = "ocr")]
-fn extract_pdf_images_ocr(path: &Path) -> ExtractionResult {
+#[cfg(any(feature = "ocr", feature = "ocrs"))]
+fn extract_pdf_images_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
     use lopdf::{Document, Object};
 
     let doc = match Document::load(path) {
@@ -224,7 +225,7 @@ fn extract_pdf_images_ocr(path: &Path) -> ExtractionResult {
 
         // Try to extract and OCR this image
         if let Some(temp_file) = extract_image_from_pdf_stream(stream, &filters, width, height) {
-            let ocr_result = extract_image_ocr(temp_file.path());
+            let ocr_result = extract_image_ocr(temp_file.path(), engine);
             if ocr_result.success && !ocr_result.text.trim().is_empty() {
                 all_text.push(ocr_result.text);
                 image_count += 1;
@@ -242,7 +243,7 @@ fn extract_pdf_images_ocr(path: &Path) -> ExtractionResult {
 }
 
 /// Get the list of filters applied to a PDF stream.
-#[cfg(feature = "ocr")]
+#[cfg(any(feature = "ocr", feature = "ocrs"))]
 fn get_stream_filters(dict: &lopdf::Dictionary) -> Vec<Vec<u8>> {
     use lopdf::Object;
 
@@ -264,7 +265,7 @@ fn get_stream_filters(dict: &lopdf::Dictionary) -> Vec<Vec<u8>> {
 
 /// Extract an image from a PDF stream and save to a temporary file.
 /// Returns None if the image format is unsupported or extraction fails.
-#[cfg(feature = "ocr")]
+#[cfg(any(feature = "ocr", feature = "ocrs"))]
 fn extract_image_from_pdf_stream(
     stream: &lopdf::Stream,
     filters: &[Vec<u8>],
@@ -337,7 +338,7 @@ fn extract_image_from_pdf_stream(
 }
 
 /// Determine the number of color channels from a PDF image's ColorSpace.
-#[cfg(feature = "ocr")]
+#[cfg(any(feature = "ocr", feature = "ocrs"))]
 fn get_color_channels(dict: &lopdf::Dictionary) -> u8 {
     use lopdf::Object;
 
@@ -439,10 +440,48 @@ fn extract_text_from_docx_xml(xml: &str) -> String {
     lines.join("\n")
 }
 
+/// Preprocess an image to improve OCR accuracy.
+///
+/// Returns a temporary file containing the processed image. The caller keeps
+/// the handle alive while running OCR so the file is not deleted.
+///
+/// Steps:
+/// 1. Convert to grayscale (removes color noise, focuses on contrast).
+/// 2. Upscale images smaller than `MIN_EDGE_FOR_OCR` on their shortest side
+///    using Lanczos3 — Tesseract accuracy improves substantially on larger
+///    inputs (roughly 300dpi-equivalent rendering).
+///
+/// Returns `None` when the image cannot be loaded or the temp file cannot be
+/// created; callers should fall back to handing the original path to OCR.
+#[cfg(any(feature = "ocr", feature = "ocrs"))]
+fn preprocess_for_ocr(path: &Path) -> Option<tempfile::NamedTempFile> {
+    /// Upscale images whose shortest edge is below this so OCR sees crisp text.
+    const MIN_EDGE_FOR_OCR: u32 = 1200;
+
+    let img = image::open(path).ok()?;
+    let (w, h) = (img.width(), img.height());
+    let min_edge = w.min(h);
+
+    let img = if min_edge < MIN_EDGE_FOR_OCR && min_edge > 0 {
+        let scale = f64::from(MIN_EDGE_FOR_OCR) / f64::from(min_edge);
+        let new_w = (f64::from(w) * scale).round() as u32;
+        let new_h = (f64::from(h) * scale).round() as u32;
+        img.resize(new_w, new_h, image::imageops::FilterType::Lanczos3)
+    } else {
+        img
+    };
+
+    let gray = image::DynamicImage::ImageLuma8(img.to_luma8());
+
+    let temp = tempfile::Builder::new().suffix(".png").tempfile().ok()?;
+    gray.save(temp.path()).ok()?;
+    Some(temp)
+}
+
 /// Extract text from an image using OCR (Tesseract).
 /// Uses thread-local Tesseract instances for better performance with parallel processing.
 #[cfg(feature = "ocr")]
-fn extract_image_ocr(path: &Path) -> ExtractionResult {
+fn extract_image_ocr_tesseract(path: &Path) -> ExtractionResult {
     use leptess::LepTess;
     use std::cell::RefCell;
 
@@ -450,6 +489,13 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
     thread_local! {
         static TESSERACT: RefCell<Option<LepTess>> = const { RefCell::new(None) };
     }
+
+    // Preprocess (grayscale + upscale small images). If preprocessing fails
+    // we still give Tesseract the original path.
+    let preprocessed = preprocess_for_ocr(path);
+    let ocr_path = preprocessed
+        .as_ref()
+        .map_or(path, tempfile::NamedTempFile::path);
 
     TESSERACT.with(|cell| {
         let mut tess_opt = cell.borrow_mut();
@@ -469,7 +515,7 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
         let lt = tess_opt.as_mut().unwrap();
 
         // Set the image
-        if let Err(e) = lt.set_image(path) {
+        if let Err(e) = lt.set_image(ocr_path) {
             return ExtractionResult::failure(format!("Failed to load image for OCR: {e}"));
         }
 
@@ -489,10 +535,68 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
     })
 }
 
-/// Stub for OCR when feature is disabled.
-#[cfg(not(feature = "ocr"))]
-fn extract_image_ocr(_path: &Path) -> ExtractionResult {
-    ExtractionResult::failure("OCR feature not enabled. Rebuild with --features ocr".to_string())
+/// Extract text from an image using the ocrs ONNX backend.
+///
+/// On the first call this downloads two `.rten` models (~25 MB total) to a
+/// per-user cache directory; later calls are fast and offline.
+#[cfg(feature = "ocrs")]
+fn extract_image_ocr_ocrs(path: &Path) -> ExtractionResult {
+    use crate::ocrs_backend;
+
+    // Preprocess (grayscale + upscale small images). On failure, pass the
+    // original path to ocrs and let the library load it directly.
+    let preprocessed = preprocess_for_ocr(path);
+    let ocr_path = preprocessed
+        .as_ref()
+        .map_or(path, tempfile::NamedTempFile::path);
+
+    match ocrs_backend::recognize(ocr_path) {
+        Ok(text) => {
+            let cleaned = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            ExtractionResult::success(cleaned)
+        }
+        Err(e) => ExtractionResult::failure(format!("ocrs OCR extraction failed: {e}")),
+    }
+}
+
+/// Dispatch OCR to the backend selected by configuration.
+///
+/// Returns a descriptive failure result if the chosen backend was not compiled
+/// in, so users know which feature flag to enable.
+fn extract_image_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
+    match engine {
+        OcrEngine::Tesseract => {
+            #[cfg(feature = "ocr")]
+            {
+                extract_image_ocr_tesseract(path)
+            }
+            #[cfg(not(feature = "ocr"))]
+            {
+                let _ = path;
+                ExtractionResult::failure(
+                    "Tesseract backend not compiled. Rebuild with --features ocr".to_string(),
+                )
+            }
+        }
+        OcrEngine::Ocrs => {
+            #[cfg(feature = "ocrs")]
+            {
+                extract_image_ocr_ocrs(path)
+            }
+            #[cfg(not(feature = "ocrs"))]
+            {
+                let _ = path;
+                ExtractionResult::failure(
+                    "ocrs backend not compiled. Rebuild with --features ocrs".to_string(),
+                )
+            }
+        }
+    }
 }
 
 /// Check if a file is binary (non-text).
@@ -599,7 +703,7 @@ mod tests {
         let path = dir.path().join("file.txt");
         fs::write(&path, "hello\nworld").unwrap();
 
-        let result = extract_text(&path, FileType::Text, false);
+        let result = extract_text(&path, FileType::Text, &OcrConfig::default());
         assert!(result.success);
         assert!(result.text.contains("hello"));
         assert!(result.text.contains("world"));
@@ -608,7 +712,7 @@ mod tests {
     #[test]
     fn test_extract_text_nonexistent_file() {
         let path = PathBuf::from("/nonexistent/path/that/should/not/exist.txt");
-        let result = extract_text(&path, FileType::Text, false);
+        let result = extract_text(&path, FileType::Text, &OcrConfig::default());
         assert!(!result.success);
     }
 
@@ -620,7 +724,7 @@ mod tests {
         let f = fs::File::create(&path).unwrap();
         f.set_len(MAX_FILE_SIZE + 1).unwrap();
         drop(f);
-        let result = extract_text(&path, FileType::Text, false);
+        let result = extract_text(&path, FileType::Text, &OcrConfig::default());
         assert!(!result.success);
         assert!(result.error.unwrap().contains("too large"));
     }
@@ -630,7 +734,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("code.rs");
         fs::write(&path, "fn main() {}\n").unwrap();
-        let result = extract_text(&path, FileType::Code, false);
+        let result = extract_text(&path, FileType::Code, &OcrConfig::default());
         assert!(result.success);
         assert!(result.text.contains("fn main"));
     }
@@ -640,7 +744,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("data.weird");
         fs::write(&path, "some weird data\n").unwrap();
-        let result = extract_text(&path, FileType::Other, false);
+        let result = extract_text(&path, FileType::Other, &OcrConfig::default());
         assert!(result.success);
         assert!(result.text.contains("some weird"));
     }
@@ -708,7 +812,7 @@ mod tests {
         let path = dir.path().join("img.png");
         fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();
 
-        let result = extract_text(&path, FileType::Image, false);
+        let result = extract_text(&path, FileType::Image, &OcrConfig::default());
         assert!(!result.success);
     }
 
@@ -717,7 +821,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("fake.pdf");
         fs::write(&path, "not really a pdf").unwrap();
-        let result = extract_text(&path, FileType::Pdf, false);
+        let result = extract_text(&path, FileType::Pdf, &OcrConfig::default());
         assert!(!result.success);
     }
 
@@ -726,7 +830,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("fake.docx");
         fs::write(&path, "not really a docx").unwrap();
-        let result = extract_text(&path, FileType::Docx, false);
+        let result = extract_text(&path, FileType::Docx, &OcrConfig::default());
         assert!(!result.success);
     }
 
@@ -754,5 +858,47 @@ mod tests {
         // For a missing file, infer returns nothing and open returns an error;
         // the function falls through and returns false.
         assert!(!is_binary_file(&path));
+    }
+
+    #[cfg(any(feature = "ocr", feature = "ocrs"))]
+    #[test]
+    fn test_preprocess_for_ocr_upscales_small_images() {
+        // A 50x50 RGB image should be upscaled to at least 1200 on its shortest
+        // side and written back out as a valid PNG.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("tiny.png");
+        let img = image::RgbImage::new(50, 50);
+        img.save(&path).unwrap();
+
+        let out = preprocess_for_ocr(&path).expect("preprocessing should succeed");
+        let processed = image::open(out.path()).expect("temp file should be a valid image");
+        assert!(processed.width() >= 1200);
+        assert!(processed.height() >= 1200);
+    }
+
+    #[cfg(any(feature = "ocr", feature = "ocrs"))]
+    #[test]
+    fn test_preprocess_for_ocr_preserves_large_images() {
+        // Images already large enough should be kept at (approximately) their
+        // original size after grayscale conversion.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("large.png");
+        let img = image::RgbImage::new(1500, 1500);
+        img.save(&path).unwrap();
+
+        let out = preprocess_for_ocr(&path).expect("preprocessing should succeed");
+        let processed = image::open(out.path()).expect("temp file should be a valid image");
+        assert_eq!(processed.width(), 1500);
+        assert_eq!(processed.height(), 1500);
+    }
+
+    #[cfg(any(feature = "ocr", feature = "ocrs"))]
+    #[test]
+    fn test_preprocess_for_ocr_returns_none_on_bad_input() {
+        // A file that is not a valid image should yield None instead of panicking.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("not_an_image.png");
+        fs::write(&path, b"not really png data").unwrap();
+        assert!(preprocess_for_ocr(&path).is_none());
     }
 }

@@ -48,7 +48,7 @@ impl SearchEngine {
             let index_path = index_config.get_index_path(&config.directory);
             match Index::load(&index_path) {
                 Ok(idx) => {
-                    eprintln!("  \x1b[32m✓\x1b[0m Loaded index with {} entries", idx.len());
+                    eprintln!("  loaded index with {} entries", idx.len());
                     Some(idx)
                 }
                 Err(_) => {
@@ -80,15 +80,15 @@ impl SearchEngine {
         let files = self.collect_files();
         let total_files = files.len();
 
-        // Create progress bar
+        // Create progress bar in the MUJI aesthetic: minimal, neutral, no spinner.
         let pb = ProgressBar::new(total_files as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {msg}")
+                .template("  {msg}  {pos}/{len}  {wide_bar}  {percent}%")
                 .unwrap()
-                .progress_chars("█▓▒░  "),
+                .progress_chars("━━─"),
         );
-        pb.set_message("Searching...");
+        pb.set_message("searching");
 
         // Thread-safe containers for results and stats
         let results: Arc<Mutex<Vec<SearchResult>>> = Arc::new(Mutex::new(Vec::new()));
@@ -136,7 +136,7 @@ impl SearchEngine {
             pb.set_position(processed as u64);
         });
 
-        pb.finish_with_message("Search complete!");
+        pb.finish_and_clear();
 
         // Update index with new entries if save_index is enabled
         if self.index_config.save_index {
@@ -156,10 +156,10 @@ impl SearchEngine {
                 // Save the index
                 let index_path = self.index_config.get_index_path(&self.config.directory);
                 if let Err(e) = index.save(&index_path) {
-                    eprintln!("  \x1b[33m⚠\x1b[0m Warning: Failed to save index: {e}");
+                    eprintln!("  warning: failed to save index: {e}");
                 } else {
                     eprintln!(
-                        "  \x1b[32m✓\x1b[0m Saved index with {} entries to {}",
+                        "  saved index with {} entries to {}",
                         index.len(),
                         index_path.display()
                     );
@@ -306,7 +306,7 @@ impl SearchEngine {
                 entry.extracted_text.clone()
             } else {
                 // Extract text and optionally add to index
-                let extraction = extract_text(path, file_type, self.config.ocr.enabled);
+                let extraction = extract_text(path, file_type, &self.config.ocr);
 
                 if !extraction.success {
                     return Some(SearchResult::with_error(
@@ -334,7 +334,7 @@ impl SearchEngine {
             }
         } else {
             // No index - extract text normally
-            let extraction = extract_text(path, file_type, self.config.ocr.enabled);
+            let extraction = extract_text(path, file_type, &self.config.ocr);
 
             if !extraction.success {
                 return Some(SearchResult::with_error(
@@ -378,7 +378,7 @@ impl SearchEngine {
         let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
 
         // Extract text
-        let extraction = extract_text(path, file_type, self.config.ocr.enabled);
+        let extraction = extract_text(path, file_type, &self.config.ocr);
 
         if !extraction.success {
             return Some(SearchResult::with_error(

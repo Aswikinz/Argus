@@ -12,7 +12,20 @@ categories = ["command-line-utilities", "text-processing"]
 
 [features]
 default = []
-ocr = ["leptess", "libc", "dep:lopdf", "dep:image", "dep:tempfile"]
+# Tesseract backend (fast, native C++ via leptess).
+ocr = ["dep:leptess", "dep:libc", "dep:lopdf", "dep:image", "dep:tempfile"]
+# ocrs backend (pure-Rust ONNX engine via rten; higher accuracy on modern
+# documents, downloads ~25 MB of models on first use).
+ocrs = [
+    "dep:ocrs",
+    "dep:rten",
+    "dep:rten-imageproc",
+    "dep:ureq",
+    "dep:directories",
+    "dep:lopdf",
+    "dep:image",
+    "dep:tempfile",
+]
 
 [[bin]]
 name = "argus"
@@ -36,13 +49,33 @@ pdf-extract = "0.7"
 # DOCX extraction (uses zip to read the archive)
 zip = "0.6"
 
-# OCR (optional)
+# Tesseract OCR (optional, gated by the `ocr` feature)
 leptess = { version = "0.14", optional = true }
 libc = { version = "0.2", optional = true }
 
-# PDF OCR: extract images from scanned PDFs (optional, part of ocr feature)
+# ocrs ONNX backend (optional, gated by the `ocrs` feature).
+# `ocrs` 0.10.0 resolves `rten` to 0.16.0 (still edition 2021, still MSRV 1.82);
+# later rten/ocrs releases started requiring Rust 1.85+ via edition2024 so we
+# pin both exactly to keep the `ocrs` feature buildable on MSRV.
+ocrs = { version = "=0.10.0", optional = true }
+rten = { version = "=0.16.0", optional = true }
+rten-imageproc = { version = "=0.16.0", optional = true }
+ureq = { version = "2.12", optional = true, default-features = false, features = ["tls"] }
+directories = { version = "5.0", optional = true }
+
+# PDF OCR and image preprocessing (shared by both OCR backends).
+# `image`'s default features pull in `ravif`/`avif-serialize` which now
+# require Rust 1.85+ via edition 2024. Select only the formats OCR actually
+# encounters in screenshots and scanned PDFs so MSRV 1.82 still builds.
 lopdf = { version = "0.34", optional = true }
-image = { version = "0.25", optional = true }
+image = { version = "0.25", default-features = false, optional = true, features = [
+    "png",
+    "jpeg",
+    "tiff",
+    "bmp",
+    "gif",
+    "webp",
+] }
 tempfile = { version = "3.24", optional = true }
 
 # File opening

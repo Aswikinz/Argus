@@ -85,7 +85,7 @@ fn no_matches_prints_message() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("No matches found"));
+        .stdout(predicate::str::contains("no matches"));
 }
 
 #[test]

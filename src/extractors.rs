@@ -198,8 +198,7 @@ fn extract_pdf_images_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
         let is_image = stream
             .dict
             .get(b"Subtype")
-            .map(|s| matches!(s, Object::Name(ref n) if n == b"Image"))
-            .unwrap_or(false);
+            .is_ok_and(|s| matches!(s, Object::Name(ref n) if n == b"Image"));
 
         if !is_image {
             continue;

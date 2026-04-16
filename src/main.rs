@@ -163,6 +163,17 @@ fn main() {
             CliOcrEngine::Ocrs => {
                 #[cfg(not(feature = "ocrs"))]
                 eprintln!("  warning: ocrs OCR not compiled. Rebuild with --features ocrs");
+
+                // Eagerly initialize the ocrs engine on the main thread BEFORE
+                // the parallel search starts. Otherwise the first rayon worker
+                // to hit an image blocks every other worker on the OnceLock
+                // while it streams the models from S3, which looks like a
+                // hang behind the progress bar.
+                #[cfg(feature = "ocrs")]
+                if let Err(e) = argus::ocrs_backend::ensure_ready() {
+                    display_error(&format!("ocrs unavailable: {e}"));
+                    process::exit(1);
+                }
             }
         }
     }

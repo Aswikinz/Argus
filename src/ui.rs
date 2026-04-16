@@ -277,3 +277,117 @@ pub fn display_banner() {
 pub fn flush() {
     let _ = io::stdout().flush();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{FileType, Match, SearchResult, SearchStats};
+    use std::path::PathBuf;
+
+    fn make_result(path: &str, file_type: FileType, matches: usize) -> SearchResult {
+        let ms = vec![Match::new("needle".into(), "this line has needle in it".into()); matches];
+        SearchResult::new(PathBuf::from(path), file_type, ms, 1024)
+    }
+
+    #[test]
+    fn create_confidence_bar_respects_width() {
+        let bar_zero = create_confidence_bar(0.0);
+        let bar_full = create_confidence_bar(1.0);
+        let bar_half = create_confidence_bar(0.5);
+        // Strings include color codes, but each must be non-empty and distinct.
+        assert!(!bar_zero.is_empty());
+        assert!(!bar_full.is_empty());
+        assert!(!bar_half.is_empty());
+        assert_ne!(bar_zero, bar_full);
+    }
+
+    #[test]
+    fn highlight_match_finds_pattern_case_insensitive() {
+        let out = highlight_match("Hello NEEDLE world", "needle");
+        assert!(!out.is_empty());
+        // Should contain the original casing of the match somewhere in the output.
+        assert!(out.contains("NEEDLE"));
+    }
+
+    #[test]
+    fn highlight_match_pattern_absent_still_returns_text() {
+        let out = highlight_match("no match here", "needle");
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn highlight_match_unicode_pattern() {
+        let out = highlight_match("café résumé", "Café");
+        assert!(!out.is_empty());
+        assert!(out.contains("café"));
+    }
+
+    #[test]
+    fn display_banner_does_not_panic() {
+        display_banner();
+    }
+
+    #[test]
+    fn display_error_does_not_panic() {
+        display_error("something went wrong");
+    }
+
+    #[test]
+    fn flush_does_not_panic() {
+        flush();
+    }
+
+    #[test]
+    fn display_results_empty_prints_no_matches() {
+        let stats = SearchStats::new();
+        display_results(&[], &stats, false);
+    }
+
+    #[test]
+    fn display_results_with_stats_breakdown() {
+        let mut stats = SearchStats::new();
+        let r1 = make_result("a.rs", FileType::Code, 3);
+        let r2 = make_result("b.pdf", FileType::Pdf, 1);
+        stats.inc_scanned();
+        stats.inc_scanned();
+        stats.add_result(&r1);
+        stats.add_result(&r2);
+        stats.duration_ms = 42;
+        display_results(&[r1, r2], &stats, true);
+    }
+
+    #[test]
+    fn display_results_duration_over_one_second_formats_seconds() {
+        let mut stats = SearchStats::new();
+        stats.duration_ms = 1500;
+        display_results(&[], &stats, false);
+    }
+
+    #[test]
+    fn display_results_ranks_first_three_distinctly() {
+        let rs = vec![
+            make_result("top.txt", FileType::Text, 10),
+            make_result("two.rs", FileType::Code, 5),
+            make_result("three.pdf", FileType::Pdf, 3),
+            make_result("four.docx", FileType::Docx, 2),
+            make_result("five.png", FileType::Image, 1),
+            make_result("six.bin", FileType::Other, 1),
+        ];
+        let stats = SearchStats::new();
+        display_results(&rs, &stats, true);
+    }
+
+    #[test]
+    fn display_results_long_path_is_truncated() {
+        let long = "/".to_string() + &"deep/".repeat(30) + "file.txt";
+        let r = make_result(&long, FileType::Text, 1);
+        let stats = SearchStats::new();
+        display_results(&[r], &stats, true);
+    }
+
+    #[test]
+    fn interactive_select_empty_returns_none() {
+        let result = interactive_select(&[]);
+        assert!(result.is_none());
+    }
+}

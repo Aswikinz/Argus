@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,6 +23,8 @@ jobs:
   create-release:
     name: Create draft release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       upload_url: ${{ steps.create.outputs.upload_url }}
       tag: ${{ steps.resolve.outputs.tag }}
@@ -50,6 +52,8 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: create-release
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:

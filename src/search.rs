@@ -752,6 +752,77 @@ mod tests {
     }
 
     #[test]
+    fn test_extraction_failure_counted_as_skipped() {
+        // Invalid PDF that pdf-extract cannot parse: this triggers the
+        // `SearchResult::with_error` branch inside the search engine and
+        // the matching `inc_skipped` path in the stats aggregator.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("broken.pdf"), b"this is not a PDF").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "whatever".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, stats) = engine.search();
+        assert!(results.is_empty());
+        assert_eq!(stats.files_skipped, 1);
+    }
+
+    #[test]
+    fn test_index_rebuild_when_load_fails() {
+        // When save_index is true but the existing index file is corrupt,
+        // a fresh index should still be produced and saved.
+        let search_dir = tempdir().unwrap();
+        fs::write(search_dir.path().join("a.txt"), "needle here").unwrap();
+        let index_path = search_dir.path().join("corrupt.json");
+        fs::write(&index_path, "not valid json at all").unwrap();
+
+        let config = SearchConfig {
+            directory: search_dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let index_config = IndexConfig {
+            save_index: true,
+            use_index: false,
+            index_file: Some(index_path.clone()),
+        };
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        // The corrupt file should have been replaced with a valid index.
+        let contents = fs::read_to_string(&index_path).unwrap();
+        assert!(contents.contains("needle here") || contents.contains("a.txt"));
+    }
+
+    #[test]
+    fn test_find_matches_literal_direct() {
+        let config = SearchConfig {
+            directory: PathBuf::from("."),
+            pattern: "foo".into(),
+            case_sensitive: false,
+            ..Default::default()
+        };
+        let engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let matches = engine.find_matches("foo FOO Foo bar");
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[test]
+    fn test_find_matches_regex_direct() {
+        let config = SearchConfig {
+            directory: PathBuf::from("."),
+            pattern: r"\d+".into(),
+            use_regex: true,
+            ..Default::default()
+        };
+        let engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let matches = engine.find_matches("abc 123 def 456");
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
     fn test_multiple_files_sorted_by_match_count() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("one.txt"), "needle").unwrap();

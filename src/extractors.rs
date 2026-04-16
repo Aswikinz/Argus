@@ -616,11 +616,90 @@ mod tests {
     fn test_extract_too_large_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("big.txt");
-        // We can't easily make a 50MB file, so just test that the size gate
-        // exists by writing a normal file and ensuring it passes.
-        fs::write(&path, "tiny").unwrap();
+        // Use a sparse file so this is cheap on modern filesystems.
+        let f = fs::File::create(&path).unwrap();
+        f.set_len(MAX_FILE_SIZE + 1).unwrap();
+        drop(f);
         let result = extract_text(&path, FileType::Text, false);
+        assert!(!result.success);
+        assert!(result.error.unwrap().contains("too large"));
+    }
+
+    #[test]
+    fn test_extract_text_with_code_filetype_uses_text_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("code.rs");
+        fs::write(&path, "fn main() {}\n").unwrap();
+        let result = extract_text(&path, FileType::Code, false);
         assert!(result.success);
+        assert!(result.text.contains("fn main"));
+    }
+
+    #[test]
+    fn test_extract_text_other_filetype_uses_text_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("data.weird");
+        fs::write(&path, "some weird data\n").unwrap();
+        let result = extract_text(&path, FileType::Other, false);
+        assert!(result.success);
+        assert!(result.text.contains("some weird"));
+    }
+
+    #[test]
+    fn test_docx_xml_paragraph_breaks_create_newlines() {
+        let xml = concat!(
+            "<w:document><w:body>",
+            "<w:p><w:r><w:t>Para1</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>Para2</w:t></w:r></w:p>",
+            "</w:body></w:document>",
+        );
+        let result = extract_text_from_docx_xml(xml);
+        assert!(result.contains("Para1"));
+        assert!(result.contains("Para2"));
+        // Distinct paragraphs should end up on separate lines.
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn test_docx_xml_handles_self_closing_text_tag() {
+        let xml = r#"<w:document><w:body><w:p><w:r><w:t/></w:r></w:p></w:body></w:document>"#;
+        let result = extract_text_from_docx_xml(xml);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_is_binary_file_pdf_not_binary() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("doc.pdf");
+        // Minimal PDF header - enough for `infer` to detect it.
+        fs::write(&path, b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n").unwrap();
+        // PDFs are handled specially, not treated as opaque binary.
+        assert!(!is_binary_file(&path));
+    }
+
+    #[test]
+    fn test_is_binary_file_image_not_binary() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("pic.png");
+        // Real PNG magic bytes so `infer` recognizes the image MIME type.
+        fs::write(
+            &path,
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89",
+        )
+        .unwrap();
+        assert!(!is_binary_file(&path));
+    }
+
+    #[test]
+    fn test_is_binary_file_non_printable_heavy() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ctrl.dat");
+        // File full of control bytes (but no nulls) should still be flagged binary
+        // via the non-printable heuristic.
+        let buf: Vec<u8> = (0..4096).map(|i| ((i % 30) + 1) as u8).collect();
+        fs::write(&path, buf).unwrap();
+        assert!(is_binary_file(&path));
     }
 
     #[test]

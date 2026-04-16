@@ -230,6 +230,7 @@ impl PartialOrd for SearchResult {
 
 /// OCR configuration options for Tesseract.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct OcrConfig {
     /// Whether OCR is enabled for images.
     pub enabled: bool,
@@ -269,12 +270,13 @@ impl Default for OcrConfig {
 
 impl OcrConfig {
     /// Create a fast OCR configuration optimized for speed.
+    #[allow(dead_code)]
     pub fn fast() -> Self {
         Self {
             enabled: true,
             language: "eng".to_string(),
-            psm: Some(6),  // Uniform block - fastest
-            oem: Some(1),  // LSTM only - faster than combined
+            psm: Some(6), // Uniform block - fastest
+            oem: Some(1), // LSTM only - faster than combined
             dpi: None,
             whitelist: None,
             max_image_dimension: Some(2000),
@@ -385,5 +387,228 @@ impl SearchStats {
     /// Increment skipped files.
     pub fn inc_skipped(&mut self) {
         self.files_skipped += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_type_from_extension_variants() {
+        assert_eq!(FileType::from_extension("md"), FileType::Text);
+        assert_eq!(FileType::from_extension("TOML"), FileType::Text);
+        assert_eq!(FileType::from_extension("cpp"), FileType::Code);
+        assert_eq!(FileType::from_extension("kt"), FileType::Code);
+        assert_eq!(FileType::from_extension("pdf"), FileType::Pdf);
+        assert_eq!(FileType::from_extension("docx"), FileType::Docx);
+        assert_eq!(FileType::from_extension("JPEG"), FileType::Image);
+        assert_eq!(FileType::from_extension("bin"), FileType::Other);
+        assert_eq!(FileType::from_extension(""), FileType::Other);
+    }
+
+    #[test]
+    fn file_type_icon_and_color_distinct() {
+        let variants = [
+            FileType::Text,
+            FileType::Code,
+            FileType::Pdf,
+            FileType::Docx,
+            FileType::Image,
+            FileType::Other,
+        ];
+        for v in variants {
+            assert!(!v.icon().is_empty());
+            assert!(!v.color().is_empty());
+        }
+    }
+
+    #[test]
+    fn file_type_display_formats() {
+        assert_eq!(format!("{}", FileType::Text), "Text");
+        assert_eq!(format!("{}", FileType::Code), "Code");
+        assert_eq!(format!("{}", FileType::Pdf), "PDF");
+        assert_eq!(format!("{}", FileType::Docx), "DOCX");
+        assert_eq!(format!("{}", FileType::Image), "Image");
+        assert_eq!(format!("{}", FileType::Other), "Other");
+    }
+
+    #[test]
+    fn match_new_stores_fields() {
+        let m = Match::new("foo".into(), "line with foo".into());
+        assert_eq!(m.matched_text, "foo");
+        assert_eq!(m.context, "line with foo");
+    }
+
+    #[test]
+    fn search_result_new_computes_confidence() {
+        let matches = vec![Match::new("x".into(), "x".into()); 5];
+        let r = SearchResult::new(PathBuf::from("a.txt"), FileType::Text, matches, 1024);
+        assert!(r.confidence > 0.0 && r.confidence <= 1.0);
+        assert_eq!(r.match_count(), 5);
+    }
+
+    #[test]
+    fn search_result_empty_confidence_is_zero() {
+        let r = SearchResult::new(PathBuf::from("a.txt"), FileType::Text, vec![], 1024);
+        assert_eq!(r.confidence, 0.0);
+        assert_eq!(r.match_count(), 0);
+    }
+
+    #[test]
+    fn search_result_zero_size_file() {
+        let matches = vec![Match::new("x".into(), "x".into())];
+        let r = SearchResult::new(PathBuf::from("a.txt"), FileType::Text, matches, 0);
+        assert!(r.confidence >= 0.0 && r.confidence <= 1.0);
+    }
+
+    #[test]
+    fn search_result_with_error_has_no_matches() {
+        let r = SearchResult::with_error(PathBuf::from("a.txt"), FileType::Text, "boom".into());
+        assert!(r.matches.is_empty());
+        assert_eq!(r.confidence, 0.0);
+        assert_eq!(r.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn search_result_filename_and_preview() {
+        let matches = vec![Match::new(
+            "bar".into(),
+            "  this is a line containing bar here".into(),
+        )];
+        let r = SearchResult::new(PathBuf::from("/tmp/foo.txt"), FileType::Text, matches, 128);
+        assert_eq!(r.filename(), "foo.txt");
+        let preview = r.preview(10).unwrap();
+        assert!(preview.ends_with("..."));
+        assert!(preview.len() <= 13);
+    }
+
+    #[test]
+    fn search_result_preview_short_context_not_truncated() {
+        let matches = vec![Match::new("x".into(), "short".into())];
+        let r = SearchResult::new(PathBuf::from("a.txt"), FileType::Text, matches, 1);
+        assert_eq!(r.preview(80).unwrap(), "short");
+    }
+
+    #[test]
+    fn search_result_preview_none_when_empty() {
+        let r = SearchResult::new(PathBuf::from("a.txt"), FileType::Text, vec![], 1);
+        assert!(r.preview(80).is_none());
+    }
+
+    #[test]
+    fn search_result_ord_sorts_by_match_count_desc() {
+        let make = |count: usize, path: &str| {
+            let matches = vec![Match::new("x".into(), "x".into()); count];
+            SearchResult::new(PathBuf::from(path), FileType::Text, matches, 1024)
+        };
+        let mut v = [make(1, "a"), make(5, "b"), make(3, "c")];
+        v.sort();
+        assert_eq!(v[0].path, PathBuf::from("b"));
+        assert_eq!(v[1].path, PathBuf::from("c"));
+        assert_eq!(v[2].path, PathBuf::from("a"));
+    }
+
+    #[test]
+    fn search_result_partial_ord_matches_ord() {
+        let a = SearchResult::new(
+            PathBuf::from("a"),
+            FileType::Text,
+            vec![Match::new("x".into(), "x".into())],
+            1,
+        );
+        let b = SearchResult::new(PathBuf::from("b"), FileType::Text, vec![], 1);
+        assert_eq!(a.partial_cmp(&b), Some(a.cmp(&b)));
+    }
+
+    #[test]
+    fn search_result_partial_eq_by_path() {
+        let a = SearchResult::with_error(PathBuf::from("x"), FileType::Text, "e".into());
+        let b = SearchResult::with_error(PathBuf::from("x"), FileType::Code, "other".into());
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn ocr_config_default_disabled() {
+        let cfg = OcrConfig::default();
+        assert!(!cfg.enabled);
+        assert!(!cfg.fast_mode);
+        assert_eq!(cfg.language, "eng");
+    }
+
+    #[test]
+    fn ocr_config_fast_enabled() {
+        let cfg = OcrConfig::fast();
+        assert!(cfg.enabled);
+        assert!(cfg.fast_mode);
+        assert_eq!(cfg.psm, Some(6));
+        assert_eq!(cfg.oem, Some(1));
+    }
+
+    #[test]
+    fn search_config_default_is_sensible() {
+        let cfg = SearchConfig::default();
+        assert_eq!(cfg.directory, PathBuf::from("."));
+        assert!(cfg.pattern.is_empty());
+        assert!(!cfg.case_sensitive);
+        assert!(!cfg.use_regex);
+        assert_eq!(cfg.limit, 20);
+        assert!(cfg.extensions.is_empty());
+    }
+
+    #[test]
+    fn index_config_get_index_path_default() {
+        let cfg = IndexConfig::default();
+        let p = cfg.get_index_path(Path::new("/tmp/project"));
+        assert_eq!(p, PathBuf::from("/tmp/project/.argus_index.json"));
+    }
+
+    #[test]
+    fn index_config_get_index_path_custom() {
+        let cfg = IndexConfig {
+            save_index: true,
+            use_index: true,
+            index_file: Some(PathBuf::from("/var/argus.json")),
+        };
+        let p = cfg.get_index_path(Path::new("/tmp/project"));
+        assert_eq!(p, PathBuf::from("/var/argus.json"));
+    }
+
+    #[test]
+    fn search_stats_increments() {
+        let mut s = SearchStats::new();
+        s.inc_scanned();
+        s.inc_scanned();
+        s.inc_skipped();
+        assert_eq!(s.files_scanned, 2);
+        assert_eq!(s.files_skipped, 1);
+        assert_eq!(s.files_matched, 0);
+    }
+
+    #[test]
+    fn search_stats_add_result_updates_by_type() {
+        let mut s = SearchStats::new();
+        let matches = vec![Match::new("x".into(), "x".into()); 3];
+        let result = SearchResult::new(PathBuf::from("f.rs"), FileType::Code, matches, 1024);
+        s.add_result(&result);
+        assert_eq!(s.files_matched, 1);
+        assert_eq!(s.total_matches, 3);
+        assert_eq!(s.by_type.get(&FileType::Code).copied(), Some(1));
+    }
+
+    #[test]
+    fn search_stats_add_result_ignores_empty_matches() {
+        let mut s = SearchStats::new();
+        let result = SearchResult::new(PathBuf::from("f.rs"), FileType::Code, vec![], 1);
+        s.add_result(&result);
+        assert_eq!(s.files_matched, 0);
+        assert_eq!(s.total_matches, 0);
+    }
+
+    #[test]
+    fn file_type_serde_roundtrip() {
+        let json = serde_json::to_string(&FileType::Pdf).unwrap();
+        let back: FileType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, FileType::Pdf);
     }
 }

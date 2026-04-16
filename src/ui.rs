@@ -261,12 +261,7 @@ pub fn display_banner() {
     "#
         .bright_cyan()
     );
-    println!(
-        "    {}",
-        "Advance Search Engine"
-            .bright_white()
-            .italic()
-    );
+    println!("    {}", "Advance Search Engine".bright_white().italic());
     println!();
 }
 

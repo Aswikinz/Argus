@@ -102,7 +102,12 @@ impl SearchEngine {
 
         // Process files in parallel using rayon
         files.par_iter().for_each(|file_path| {
-            let result = self.search_file_with_index(file_path, index_ref.as_ref(), &new_index_entries, save_index);
+            let result = self.search_file_with_index(
+                file_path,
+                index_ref.as_ref(),
+                &new_index_entries,
+                save_index,
+            );
 
             // Update stats
             {
@@ -152,7 +157,11 @@ impl SearchEngine {
                 if let Err(e) = index.save(&index_path) {
                     eprintln!("  \x1b[33m⚠\x1b[0m Warning: Failed to save index: {}", e);
                 } else {
-                    eprintln!("  \x1b[32m✓\x1b[0m Saved index with {} entries to {}", index.len(), index_path.display());
+                    eprintln!(
+                        "  \x1b[32m✓\x1b[0m Saved index with {} entries to {}",
+                        index.len(),
+                        index_path.display()
+                    );
                 }
             }
         }
@@ -301,7 +310,9 @@ impl SearchEngine {
                     return Some(SearchResult::with_error(
                         path.clone(),
                         file_type,
-                        extraction.error.unwrap_or_else(|| "Unknown error".to_string()),
+                        extraction
+                            .error
+                            .unwrap_or_else(|| "Unknown error".to_string()),
                     ));
                 }
 
@@ -327,7 +338,9 @@ impl SearchEngine {
                 return Some(SearchResult::with_error(
                     path.clone(),
                     file_type,
-                    extraction.error.unwrap_or_else(|| "Unknown error".to_string()),
+                    extraction
+                        .error
+                        .unwrap_or_else(|| "Unknown error".to_string()),
                 ));
             }
 
@@ -340,7 +353,12 @@ impl SearchEngine {
         if matches.is_empty() {
             None
         } else {
-            Some(SearchResult::new(path.clone(), file_type, matches, file_size))
+            Some(SearchResult::new(
+                path.clone(),
+                file_type,
+                matches,
+                file_size,
+            ))
         }
     }
 
@@ -364,7 +382,9 @@ impl SearchEngine {
             return Some(SearchResult::with_error(
                 path.to_path_buf(),
                 file_type,
-                extraction.error.unwrap_or_else(|| "Unknown error".to_string()),
+                extraction
+                    .error
+                    .unwrap_or_else(|| "Unknown error".to_string()),
             ));
         }
 
@@ -374,7 +394,12 @@ impl SearchEngine {
         if matches.is_empty() {
             None
         } else {
-            Some(SearchResult::new(path.to_path_buf(), file_type, matches, file_size))
+            Some(SearchResult::new(
+                path.to_path_buf(),
+                file_type,
+                matches,
+                file_size,
+            ))
         }
     }
 
@@ -505,5 +530,239 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].matches.len(), 3);
+    }
+
+    #[test]
+    fn test_invalid_regex_returns_error() {
+        let config = SearchConfig {
+            directory: PathBuf::from("."),
+            pattern: "[".into(),
+            use_regex: true,
+            ..Default::default()
+        };
+        let result = SearchEngine::new(config, IndexConfig::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_case_sensitive_literal_search() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "Hello HELLO hello").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "Hello".into(),
+            case_sensitive: true,
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matches.len(), 1);
+    }
+
+    #[test]
+    fn test_no_matches_returns_empty() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "nothing here").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "zzzzz".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, stats) = engine.search();
+        assert!(results.is_empty());
+        assert_eq!(stats.files_matched, 0);
+    }
+
+    #[test]
+    fn test_extension_filter() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "match").unwrap();
+        fs::write(dir.path().join("b.log"), "match").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "match".into(),
+            extensions: vec!["txt".into()],
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().ends_with("a.txt"));
+    }
+
+    #[test]
+    fn test_extension_filter_with_dot_prefix() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "match").unwrap();
+        fs::write(dir.path().join("b.log"), "match").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "match".into(),
+            extensions: vec![".txt".into()],
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_hidden_files_skipped_by_default() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".hidden.txt"), "secret match").unwrap();
+        fs::write(dir.path().join("visible.txt"), "secret match").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "secret".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().ends_with("visible.txt"));
+    }
+
+    #[test]
+    fn test_hidden_files_included_when_enabled() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".hidden.txt"), "secret match").unwrap();
+        fs::write(dir.path().join("visible.txt"), "secret match").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "secret".into(),
+            include_hidden: true,
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_max_depth_limits_descent() {
+        let dir = tempdir().unwrap();
+        let deep = dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(dir.path().join("top.txt"), "needle").unwrap();
+        fs::write(deep.join("deep.txt"), "needle").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            max_depth: Some(1),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().ends_with("top.txt"));
+    }
+
+    #[test]
+    fn test_skipped_dirs_ignored() {
+        let dir = tempdir().unwrap();
+        let nm = dir.path().join("node_modules");
+        fs::create_dir_all(&nm).unwrap();
+        fs::write(nm.join("bundle.js"), "needle").unwrap();
+        fs::write(dir.path().join("top.txt"), "needle").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].path.to_string_lossy().ends_with("top.txt"));
+    }
+
+    #[test]
+    fn test_limit_truncates_results() {
+        let dir = tempdir().unwrap();
+        for i in 0..5 {
+            fs::write(dir.path().join(format!("f{}.txt", i)), "needle").unwrap();
+        }
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            limit: 2,
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_save_and_use_index_roundtrip() {
+        let search_dir = tempdir().unwrap();
+        let index_dir = tempdir().unwrap();
+        fs::write(search_dir.path().join("a.txt"), "hello world").unwrap();
+        let index_path = index_dir.path().join("my_index.json");
+
+        let config = SearchConfig {
+            directory: search_dir.path().to_path_buf(),
+            pattern: "hello".into(),
+            ..Default::default()
+        };
+        let index_config = IndexConfig {
+            save_index: true,
+            use_index: false,
+            index_file: Some(index_path.clone()),
+        };
+        let mut engine = SearchEngine::new(config.clone(), index_config).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(index_path.exists());
+
+        let index_config = IndexConfig {
+            save_index: false,
+            use_index: true,
+            index_file: Some(index_path.clone()),
+        };
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_stats_recorded() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle").unwrap();
+        fs::write(dir.path().join("b.txt"), "other").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (_results, stats) = engine.search();
+        assert_eq!(stats.files_scanned, 2);
+        assert_eq!(stats.files_matched, 1);
+        assert_eq!(stats.total_matches, 1);
+    }
+
+    #[test]
+    fn test_multiple_files_sorted_by_match_count() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("one.txt"), "needle").unwrap();
+        fs::write(dir.path().join("many.txt"), "needle needle needle\nneedle").unwrap();
+
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].path.to_string_lossy().ends_with("many.txt"));
     }
 }

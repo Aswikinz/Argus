@@ -3,19 +3,15 @@
 //! A powerful CLI tool for searching text across any file format,
 //! including PDFs, Word documents, images (with OCR), and code files.
 
-mod extractors;
-mod index;
-mod search;
-mod types;
-mod ui;
-
 use clap::{Parser, ValueHint};
 use std::path::PathBuf;
 use std::process;
 
-use search::SearchEngine;
-use types::{IndexConfig, OcrConfig, SearchConfig};
-use ui::{display_banner, display_error, display_results, flush, interactive_select, open_file};
+use argus::search::SearchEngine;
+use argus::types::{IndexConfig, OcrConfig, SearchConfig};
+use argus::ui::{
+    display_banner, display_error, display_results, flush, interactive_select, open_file,
+};
 
 /// Argus - The All-Seeing File Search Tool
 ///

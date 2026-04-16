@@ -312,4 +312,172 @@ mod tests {
         // Entry should now be stale
         assert!(index.get_valid_entry(&test_file).is_none());
     }
+
+    #[test]
+    fn test_load_missing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("does_not_exist.json");
+        let err = Index::load(&path).unwrap_err();
+        match err {
+            IndexError::NotFound(p) => assert_eq!(p, path),
+            other => panic!("expected NotFound, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_load_invalid_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        fs::write(&path, "not valid json").unwrap();
+        let err = Index::load(&path).unwrap_err();
+        assert!(matches!(err, IndexError::ParseError(_)));
+    }
+
+    #[test]
+    fn test_load_version_mismatch() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("index.json");
+        let payload = serde_json::json!({
+            "version": 999u32,
+            "directory": dir.path(),
+            "created_at": 0u64,
+            "updated_at": 0u64,
+            "entries": {}
+        });
+        fs::write(&path, serde_json::to_string(&payload).unwrap()).unwrap();
+        let err = Index::load(&path).unwrap_err();
+        match err {
+            IndexError::VersionMismatch { expected, found } => {
+                assert_eq!(expected, INDEX_VERSION);
+                assert_eq!(found, 999);
+            }
+            other => panic!("expected VersionMismatch, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_index_error_display_variants() {
+        let e = IndexError::NotFound(PathBuf::from("/x"));
+        assert!(format!("{}", e).contains("not found"));
+        let e = IndexError::IoError("disk".into());
+        assert!(format!("{}", e).contains("IO"));
+        let e = IndexError::ParseError("bad".into());
+        assert!(format!("{}", e).contains("parse"));
+        let e = IndexError::VersionMismatch {
+            expected: 1,
+            found: 2,
+        };
+        assert!(format!("{}", e).contains("version"));
+    }
+
+    #[test]
+    fn test_is_empty_and_len() {
+        let mut index = Index::new(PathBuf::from("/tmp"));
+        assert!(index.is_empty());
+        assert_eq!(index.len(), 0);
+        index.upsert_entry(IndexEntry::new(
+            PathBuf::from("/tmp/a.txt"),
+            FileType::Text,
+            "t".into(),
+            0,
+            0,
+        ));
+        assert!(!index.is_empty());
+        assert_eq!(index.len(), 1);
+    }
+
+    #[test]
+    fn test_upsert_replaces_entry() {
+        let mut index = Index::new(PathBuf::from("/tmp"));
+        let p = PathBuf::from("/tmp/a.txt");
+        index.upsert_entry(IndexEntry::new(
+            p.clone(),
+            FileType::Text,
+            "first".into(),
+            0,
+            1,
+        ));
+        index.upsert_entry(IndexEntry::new(
+            p.clone(),
+            FileType::Text,
+            "second".into(),
+            1,
+            2,
+        ));
+        assert_eq!(index.len(), 1);
+        assert_eq!(index.entries.get(&p).unwrap().extracted_text, "second");
+    }
+
+    #[test]
+    fn test_prune_missing_removes_deleted() {
+        let dir = tempdir().unwrap();
+        let present = dir.path().join("exists.txt");
+        fs::write(&present, "hi").unwrap();
+        let missing = dir.path().join("missing.txt");
+
+        let mut index = Index::new(dir.path().to_path_buf());
+        index.upsert_entry(IndexEntry::new(
+            present.clone(),
+            FileType::Text,
+            "hi".into(),
+            0,
+            2,
+        ));
+        index.upsert_entry(IndexEntry::new(
+            missing.clone(),
+            FileType::Text,
+            "nope".into(),
+            0,
+            0,
+        ));
+        assert_eq!(index.len(), 2);
+
+        index.prune_missing();
+        assert_eq!(index.len(), 1);
+        assert!(index.entries.contains_key(&present));
+        assert!(!index.entries.contains_key(&missing));
+    }
+
+    #[test]
+    fn test_get_valid_entry_nonexistent_file() {
+        let dir = tempdir().unwrap();
+        let ghost = dir.path().join("ghost.txt");
+        let mut index = Index::new(dir.path().to_path_buf());
+        index.upsert_entry(IndexEntry::new(
+            ghost.clone(),
+            FileType::Text,
+            "text".into(),
+            123,
+            4,
+        ));
+        assert!(index.get_valid_entry(&ghost).is_none());
+    }
+
+    #[test]
+    fn test_current_timestamp_nonzero() {
+        assert!(current_timestamp() > 0);
+    }
+
+    #[test]
+    fn test_get_file_timestamp_existing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, "x").unwrap();
+        assert!(get_file_timestamp(&path).is_some());
+    }
+
+    #[test]
+    fn test_get_file_timestamp_missing() {
+        let path = PathBuf::from("/definitely/not/a/real/path.xyz");
+        assert!(get_file_timestamp(&path).is_none());
+    }
+
+    #[test]
+    fn test_save_creates_parent_directory() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("nested").join("deep").join("index.json");
+        let mut index = Index::new(dir.path().to_path_buf());
+        assert!(index.save(&nested).is_ok());
+        assert!(nested.exists());
+    }
 }

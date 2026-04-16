@@ -146,6 +146,7 @@ fn main() {
         use_regex: cli.regex,
         ocr: OcrConfig {
             enabled: cli.ocr,
+            ..OcrConfig::default()
         },
         limit: cli.limit,
         max_depth: cli.max_depth,
@@ -165,7 +166,7 @@ fn main() {
     let mut engine = match SearchEngine::new(config.clone(), index_config) {
         Ok(e) => e,
         Err(e) => {
-            display_error(&format!("Invalid regex pattern: {}", e));
+            display_error(&format!("Invalid regex pattern: {e}"));
             process::exit(1);
         }
     };
@@ -189,7 +190,7 @@ fn main() {
         loop {
             if let Some(selected) = interactive_select(&results) {
                 if let Err(e) = open_file(selected) {
-                    display_error(&format!("Failed to open file: {}", e));
+                    display_error(&format!("Failed to open file: {e}"));
                 }
                 // Continue the loop to allow selecting another file
                 println!();

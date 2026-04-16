@@ -71,9 +71,11 @@ pub fn extract_text(path: &Path, file_type: FileType, ocr_enabled: bool) -> Extr
 
 /// Extract text from a plain text file with encoding detection.
 fn extract_text_file(path: &Path) -> ExtractionResult {
+    const MAX_LINES: usize = 100_000;
+
     let file = match File::open(path) {
         Ok(f) => f,
-        Err(e) => return ExtractionResult::failure(format!("Failed to open file: {}", e)),
+        Err(e) => return ExtractionResult::failure(format!("Failed to open file: {e}")),
     };
 
     // Use encoding detection for text files
@@ -84,7 +86,6 @@ fn extract_text_file(path: &Path) -> ExtractionResult {
     let reader = BufReader::new(decoder);
     let mut text = String::new();
     let mut line_count = 0;
-    const MAX_LINES: usize = 100_000;
 
     for line_result in reader.lines() {
         match line_result {
@@ -99,7 +100,7 @@ fn extract_text_file(path: &Path) -> ExtractionResult {
             Err(e) => {
                 // Try to continue on encoding errors
                 if text.is_empty() {
-                    return ExtractionResult::failure(format!("Failed to read file: {}", e));
+                    return ExtractionResult::failure(format!("Failed to read file: {e}"));
                 }
                 break;
             }
@@ -117,13 +118,12 @@ fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
     let text_result = pdf_extract::extract_text(path);
 
     let cleaned = match text_result {
-        Ok(text) => {
-            text.lines()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
+        Ok(text) => text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
         Err(_) => String::new(),
     };
 
@@ -155,9 +155,9 @@ fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
         if !cleaned.is_empty() {
             return ExtractionResult::success(cleaned);
         }
-        return ExtractionResult::failure(
+        ExtractionResult::failure(
             "PDF appears to be scanned but OCR could not extract text".to_string(),
-        );
+        )
     }
 
     #[cfg(not(feature = "ocr"))]
@@ -181,19 +181,16 @@ fn extract_pdf_images_ocr(path: &Path) -> ExtractionResult {
 
     let doc = match Document::load(path) {
         Ok(d) => d,
-        Err(e) => {
-            return ExtractionResult::failure(format!("Failed to parse PDF for OCR: {}", e))
-        }
+        Err(e) => return ExtractionResult::failure(format!("Failed to parse PDF for OCR: {e}")),
     };
 
     let mut all_text: Vec<String> = Vec::new();
     let mut image_count = 0;
 
     // Iterate through all objects looking for image streams
-    for (_object_id, object) in &doc.objects {
-        let stream = match object {
-            Object::Stream(ref s) => s,
-            _ => continue,
+    for object in doc.objects.values() {
+        let Object::Stream(ref stream) = *object else {
+            continue;
         };
 
         // Check if this is an Image XObject
@@ -237,8 +234,7 @@ fn extract_pdf_images_ocr(path: &Path) -> ExtractionResult {
 
     if all_text.is_empty() {
         ExtractionResult::failure(format!(
-            "No readable text found in {} PDF image(s)",
-            image_count
+            "No readable text found in {image_count} PDF image(s)"
         ))
     } else {
         ExtractionResult::success(all_text.join("\n\n"))
@@ -285,19 +281,13 @@ fn extract_image_from_pdf_stream(
 
     if is_dct {
         // DCTDecode = JPEG: the stream content is a valid JPEG file
-        let mut temp = tempfile::Builder::new()
-            .suffix(".jpg")
-            .tempfile()
-            .ok()?;
+        let mut temp = tempfile::Builder::new().suffix(".jpg").tempfile().ok()?;
         temp.write_all(&stream.content).ok()?;
         temp.flush().ok()?;
         Some(temp)
     } else if is_jpx {
         // JPXDecode = JPEG2000: save the raw stream as .jp2
-        let mut temp = tempfile::Builder::new()
-            .suffix(".jp2")
-            .tempfile()
-            .ok()?;
+        let mut temp = tempfile::Builder::new().suffix(".jp2").tempfile().ok()?;
         temp.write_all(&stream.content).ok()?;
         temp.flush().ok()?;
         Some(temp)
@@ -338,10 +328,7 @@ fn extract_image_from_pdf_stream(
             _ => return None,
         };
 
-        let temp = tempfile::Builder::new()
-            .suffix(".png")
-            .tempfile()
-            .ok()?;
+        let temp = tempfile::Builder::new().suffix(".png").tempfile().ok()?;
         img.save(temp.path()).ok()?;
         Some(temp)
     } else {
@@ -357,25 +344,24 @@ fn get_color_channels(dict: &lopdf::Dictionary) -> u8 {
     match dict.get(b"ColorSpace") {
         Ok(Object::Name(ref name)) => match name.as_slice() {
             b"DeviceGray" | b"CalGray" => 1,
-            b"DeviceRGB" | b"CalRGB" => 3,
             b"DeviceCMYK" => 4,
-            _ => 3, // Default to RGB
+            // DeviceRGB / CalRGB / anything else: default to RGB.
+            _ => 3,
         },
         Ok(Object::Array(ref arr)) => {
             // Indexed or ICCBased color spaces are arrays like [/ICCBased ref]
             if let Some(Object::Name(ref name)) = arr.first() {
                 match name.as_slice() {
-                    b"ICCBased" => 3, // Most common ICC profiles are RGB
-                    b"Indexed" => 1,  // Palette-based
-                    b"CalGray" => 1,
-                    b"CalRGB" => 3,
+                    b"Indexed" | b"CalGray" => 1, // single-channel palette / gray
+                    // ICCBased / CalRGB / anything else: RGB (most common).
                     _ => 3,
                 }
             } else {
                 3
             }
         }
-        _ => 3, // Default to RGB if ColorSpace is missing or a reference
+        // Missing or reference ColorSpace: default to RGB.
+        _ => 3,
     }
 }
 
@@ -383,7 +369,7 @@ fn get_color_channels(dict: &lopdf::Dictionary) -> u8 {
 fn extract_docx(path: &Path) -> ExtractionResult {
     match extract_docx_text(path) {
         Ok(text) => ExtractionResult::success(text),
-        Err(e) => ExtractionResult::failure(format!("Failed to extract DOCX text: {}", e)),
+        Err(e) => ExtractionResult::failure(format!("Failed to extract DOCX text: {e}")),
     }
 }
 
@@ -446,7 +432,7 @@ fn extract_text_from_docx_xml(xml: &str) -> String {
     // Clean up multiple newlines
     let lines: Vec<&str> = result
         .lines()
-        .map(|l| l.trim())
+        .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
 
@@ -462,7 +448,7 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
 
     // Thread-local Tesseract instance to avoid re-initialization overhead
     thread_local! {
-        static TESSERACT: RefCell<Option<LepTess>> = RefCell::new(None);
+        static TESSERACT: RefCell<Option<LepTess>> = const { RefCell::new(None) };
     }
 
     TESSERACT.with(|cell| {
@@ -474,8 +460,7 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
                 Ok(lt) => *tess_opt = Some(lt),
                 Err(e) => {
                     return ExtractionResult::failure(format!(
-                        "Failed to initialize Tesseract: {}",
-                        e
+                        "Failed to initialize Tesseract: {e}"
                     ))
                 }
             }
@@ -485,7 +470,7 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
 
         // Set the image
         if let Err(e) = lt.set_image(path) {
-            return ExtractionResult::failure(format!("Failed to load image for OCR: {}", e));
+            return ExtractionResult::failure(format!("Failed to load image for OCR: {e}"));
         }
 
         // Get text
@@ -493,13 +478,13 @@ fn extract_image_ocr(path: &Path) -> ExtractionResult {
             Ok(text) => {
                 let cleaned = text
                     .lines()
-                    .map(|l| l.trim())
+                    .map(str::trim)
                     .filter(|l| !l.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n");
                 ExtractionResult::success(cleaned)
             }
-            Err(e) => ExtractionResult::failure(format!("OCR extraction failed: {}", e)),
+            Err(e) => ExtractionResult::failure(format!("OCR extraction failed: {e}")),
         }
     })
 }
@@ -533,7 +518,9 @@ pub fn is_binary_file(path: &Path) -> bool {
     if let Ok(mut file) = File::open(path) {
         let mut buffer = [0u8; 8192];
         if let Ok(n) = file.read(&mut buffer) {
-            // Check for null bytes (common in binary files)
+            // Check for null bytes (common in binary files). The `bytecount` crate
+            // is faster for this, but not worth the extra dep for an 8 KiB buffer.
+            #[allow(clippy::naive_bytecount)]
             let null_count = buffer[..n].iter().filter(|&&b| b == 0).count();
             if null_count > n / 10 {
                 return true;

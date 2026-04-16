@@ -131,8 +131,7 @@ impl Index {
             .modified()
             .ok()
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         let current_size = metadata.len();
 
         if entry.is_stale(current_modified, current_size) {
@@ -181,13 +180,12 @@ impl std::fmt::Display for IndexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IndexError::NotFound(path) => write!(f, "Index file not found: {}", path.display()),
-            IndexError::IoError(msg) => write!(f, "IO error: {}", msg),
-            IndexError::ParseError(msg) => write!(f, "Failed to parse index: {}", msg),
+            IndexError::IoError(msg) => write!(f, "IO error: {msg}"),
+            IndexError::ParseError(msg) => write!(f, "Failed to parse index: {msg}"),
             IndexError::VersionMismatch { expected, found } => {
                 write!(
                     f,
-                    "Index version mismatch: expected {}, found {}",
-                    expected, found
+                    "Index version mismatch: expected {expected}, found {found}"
                 )
             }
         }
@@ -320,7 +318,7 @@ mod tests {
         let err = Index::load(&path).unwrap_err();
         match err {
             IndexError::NotFound(p) => assert_eq!(p, path),
-            other => panic!("expected NotFound, got {:?}", other),
+            other => panic!("expected NotFound, got {other:?}"),
         }
     }
 
@@ -351,23 +349,23 @@ mod tests {
                 assert_eq!(expected, INDEX_VERSION);
                 assert_eq!(found, 999);
             }
-            other => panic!("expected VersionMismatch, got {:?}", other),
+            other => panic!("expected VersionMismatch, got {other:?}"),
         }
     }
 
     #[test]
     fn test_index_error_display_variants() {
         let e = IndexError::NotFound(PathBuf::from("/x"));
-        assert!(format!("{}", e).contains("not found"));
+        assert!(format!("{e}").contains("not found"));
         let e = IndexError::IoError("disk".into());
-        assert!(format!("{}", e).contains("IO"));
+        assert!(format!("{e}").contains("IO"));
         let e = IndexError::ParseError("bad".into());
-        assert!(format!("{}", e).contains("parse"));
+        assert!(format!("{e}").contains("parse"));
         let e = IndexError::VersionMismatch {
             expected: 1,
             found: 2,
         };
-        assert!(format!("{}", e).contains("version"));
+        assert!(format!("{e}").contains("version"));
     }
 
     #[test]

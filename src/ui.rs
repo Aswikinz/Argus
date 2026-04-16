@@ -90,10 +90,10 @@ fn display_stats(stats: &SearchStats) {
 fn display_result(rank: usize, result: &SearchResult, show_preview: bool) {
     // Rank indicator with special colors for top 3
     let rank_str = match rank {
-        1 => format!("#{}", rank).bright_yellow().bold(),
-        2 => format!("#{}", rank).white().bold(),
-        3 => format!("#{}", rank).truecolor(205, 127, 50).bold(), // Bronze
-        _ => format!("#{}", rank).dimmed(),
+        1 => format!("#{rank}").bright_yellow().bold(),
+        2 => format!("#{rank}").white().bold(),
+        3 => format!("#{rank}").truecolor(205, 127, 50).bold(), // Bronze
+        _ => format!("#{rank}").dimmed(),
     };
 
     // File type icon and filename
@@ -119,8 +119,11 @@ fn display_result(rank: usize, result: &SearchResult, show_preview: bool) {
     // File path (relative if possible)
     let path_str = result.path.to_string_lossy();
     let display_path = if path_str.chars().count() > 60 {
-        let truncated: String = path_str.chars().skip(path_str.chars().count() - 57).collect();
-        format!("...{}", truncated)
+        let truncated: String = path_str
+            .chars()
+            .skip(path_str.chars().count() - 57)
+            .collect();
+        format!("...{truncated}")
     } else {
         path_str.to_string()
     };
@@ -133,7 +136,7 @@ fn display_result(rank: usize, result: &SearchResult, show_preview: bool) {
         colored_filename,
         "•".dimmed(),
         match_count.bright_green(),
-        format!("[{} {}]", confidence_bar, confidence_pct).dimmed()
+        format!("[{confidence_bar} {confidence_pct}]").dimmed()
     );
 
     println!("     {} {}", "📍".dimmed(), display_path.dimmed());

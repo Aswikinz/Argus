@@ -77,3 +77,18 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+uninlined_format_args = "warn"
+needless_return = "warn"
+redundant_closure_for_method_calls = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+for_kv_map = "warn"
+missing_const_for_thread_local = "warn"
+redundant_closure = "warn"
+match_same_arms = "warn"
+items_after_statements = "warn"

@@ -38,12 +38,11 @@ impl FileType {
     /// Get the color name for this file type.
     pub fn color(&self) -> &'static str {
         match self {
-            FileType::Text => "white",
             FileType::Code => "cyan",
             FileType::Pdf => "red",
             FileType::Docx => "blue",
             FileType::Image => "magenta",
-            FileType::Other => "white",
+            FileType::Text | FileType::Other => "white",
         }
     }
 
@@ -87,7 +86,7 @@ impl fmt::Display for FileType {
             FileType::Image => "Image",
             FileType::Other => "Other",
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }
 
@@ -194,10 +193,10 @@ impl SearchResult {
 
     /// Get the filename.
     pub fn filename(&self) -> String {
-        self.path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string())
+        self.path.file_name().map_or_else(
+            || "unknown".to_string(),
+            |n| n.to_string_lossy().to_string(),
+        )
     }
 }
 

@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a problem with Argus
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal reproduction (commands, sample files, etc.).
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Argus version
+      description: Output of `argus --version`
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: features
+    attributes:
+      label: Features
+      options:
+        - label: Built with `--features ocr`
+          required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Additional context / logs
+      render: shell

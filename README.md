@@ -1,5 +1,10 @@
 # Argus - The All-Seeing File Search Tool
 
+[![CI](https://github.com/Aswikinz/Argus/actions/workflows/ci.yml/badge.svg)](https://github.com/Aswikinz/Argus/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Aswikinz/Argus/actions/workflows/codeql.yml/badge.svg)](https://github.com/Aswikinz/Argus/actions/workflows/codeql.yml)
+[![codecov](https://codecov.io/gh/Aswikinz/Argus/branch/main/graph/badge.svg)](https://codecov.io/gh/Aswikinz/Argus)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Named after Argus Panoptes, the all-seeing giant from Greek mythology, **Argus** is a powerful CLI tool that searches for text across any file format.
 
 ## Features

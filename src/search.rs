@@ -141,9 +141,10 @@ impl SearchEngine {
         // Update index with new entries if save_index is enabled
         if self.index_config.save_index {
             if let Some(ref mut index) = self.index {
-                let entries = Arc::try_unwrap(new_index_entries)
-                    .map(|mutex| mutex.into_inner().unwrap())
-                    .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+                let entries = Arc::try_unwrap(new_index_entries).map_or_else(
+                    |arc| arc.lock().unwrap().clone(),
+                    |mutex| mutex.into_inner().unwrap(),
+                );
 
                 for entry in entries {
                     index.upsert_entry(entry);
@@ -155,7 +156,7 @@ impl SearchEngine {
                 // Save the index
                 let index_path = self.index_config.get_index_path(&self.config.directory);
                 if let Err(e) = index.save(&index_path) {
-                    eprintln!("  \x1b[33m⚠\x1b[0m Warning: Failed to save index: {}", e);
+                    eprintln!("  \x1b[33m⚠\x1b[0m Warning: Failed to save index: {e}");
                 } else {
                     eprintln!(
                         "  \x1b[32m✓\x1b[0m Saved index with {} entries to {}",
@@ -167,12 +168,14 @@ impl SearchEngine {
         }
 
         // Get final results and stats
-        let mut final_results = Arc::try_unwrap(results)
-            .map(|mutex| mutex.into_inner().unwrap())
-            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
-        let mut final_stats = Arc::try_unwrap(stats)
-            .map(|mutex| mutex.into_inner().unwrap())
-            .unwrap_or_else(|arc| arc.lock().unwrap().clone());
+        let mut final_results = Arc::try_unwrap(results).map_or_else(
+            |arc| arc.lock().unwrap().clone(),
+            |mutex| mutex.into_inner().unwrap(),
+        );
+        let mut final_stats = Arc::try_unwrap(stats).map_or_else(
+            |arc| arc.lock().unwrap().clone(),
+            |mutex| mutex.into_inner().unwrap(),
+        );
 
         // Sort results by match count (descending)
         final_results.sort();
@@ -208,17 +211,16 @@ impl SearchEngine {
         walker
             .into_iter()
             .filter_entry(|e| self.should_process_entry(e))
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.file_type().is_file())
             .filter(|e| {
                 // Filter by extension if specified
                 if extensions.is_empty() {
                     true
                 } else {
-                    e.path()
-                        .extension()
-                        .map(|ext| extensions.contains(&ext.to_string_lossy().to_lowercase()))
-                        .unwrap_or(false)
+                    e.path().extension().is_some_and(|ext| {
+                        extensions.contains(&ext.to_string_lossy().to_lowercase())
+                    })
                 }
             })
             .filter(|e| {
@@ -687,7 +689,7 @@ mod tests {
     fn test_limit_truncates_results() {
         let dir = tempdir().unwrap();
         for i in 0..5 {
-            fs::write(dir.path().join(format!("f{}.txt", i)), "needle").unwrap();
+            fs::write(dir.path().join(format!("f{i}.txt")), "needle").unwrap();
         }
         let config = SearchConfig {
             directory: dir.path().to_path_buf(),

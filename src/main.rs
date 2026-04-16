@@ -29,7 +29,8 @@ use argus::ui::{
                   argus -d ~/projects \"fn main\"   Search in specific directory\n    \
                   argus -r \"\\bfn\\s+\\w+\"           Use regex pattern matching\n    \
                   argus -e pdf,docx \"report\"      Search only in PDF and DOCX files\n    \
-                  argus -o \"text in image\"        Enable OCR for images\n    \
+                  argus -o \"text in image\"        Enable OCR for images and scanned PDFs\n    \
+                  argus -o -e pdf \"invoice\"       Search scanned PDF documents via OCR\n    \
                   argus -s -l 50 \"Error\"          Case-sensitive, limit to 50 results\n    \
                   argus -i \"pattern\"              Save index for faster future searches\n    \
                   argus -I \"pattern\"              Use existing index if available\n    \
@@ -57,7 +58,7 @@ struct Cli {
     #[arg(short = 's', long = "case-sensitive")]
     case_sensitive: bool,
 
-    /// Enable OCR for searching text in images (requires Tesseract)
+    /// Enable OCR for images and scanned PDFs (requires Tesseract)
     #[arg(short = 'o', long = "ocr")]
     ocr: bool,
 
@@ -145,7 +146,6 @@ fn main() {
         use_regex: cli.regex,
         ocr: OcrConfig {
             enabled: cli.ocr,
-            ..OcrConfig::default()
         },
         limit: cli.limit,
         max_depth: cli.max_depth,

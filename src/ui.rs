@@ -118,8 +118,9 @@ fn display_result(rank: usize, result: &SearchResult, show_preview: bool) {
 
     // File path (relative if possible)
     let path_str = result.path.to_string_lossy();
-    let display_path = if path_str.len() > 60 {
-        format!("...{}", &path_str[path_str.len() - 57..])
+    let display_path = if path_str.chars().count() > 60 {
+        let truncated: String = path_str.chars().skip(path_str.chars().count() - 57).collect();
+        format!("...{}", truncated)
     } else {
         path_str.to_string()
     };
@@ -162,14 +163,18 @@ fn create_confidence_bar(confidence: f64) -> String {
 
 /// Highlight matched text in a preview string.
 fn highlight_match(text: &str, pattern: &str) -> String {
-    // Case-insensitive replacement for highlighting
+    // Case-insensitive search for highlighting
     let lower_text = text.to_lowercase();
     let lower_pattern = pattern.to_lowercase();
 
-    if let Some(pos) = lower_text.find(&lower_pattern) {
-        let before = &text[..pos];
-        let matched = &text[pos..pos + pattern.len()];
-        let after = &text[pos + pattern.len()..];
+    if let Some(byte_pos) = lower_text.find(&lower_pattern) {
+        // Map byte position in lowercase back to char count, then slice original by chars
+        let char_start = lower_text[..byte_pos].chars().count();
+        let char_len = lower_pattern.chars().count();
+
+        let before: String = text.chars().take(char_start).collect();
+        let matched: String = text.chars().skip(char_start).take(char_len).collect();
+        let after: String = text.chars().skip(char_start + char_len).collect();
 
         format!(
             "{}{}{}",

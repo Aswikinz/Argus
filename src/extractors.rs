@@ -57,7 +57,7 @@ pub fn extract_text(path: &Path, file_type: FileType, ocr_enabled: bool) -> Extr
 
     match file_type {
         FileType::Text | FileType::Code | FileType::Other => extract_text_file(path),
-        FileType::Pdf => extract_pdf(path),
+        FileType::Pdf => extract_pdf(path, ocr_enabled),
         FileType::Docx => extract_docx(path),
         FileType::Image => {
             if ocr_enabled {
@@ -110,19 +110,272 @@ fn extract_text_file(path: &Path) -> ExtractionResult {
 }
 
 /// Extract text from a PDF file.
-fn extract_pdf(path: &Path) -> ExtractionResult {
-    match pdf_extract::extract_text(path) {
+/// When `ocr_enabled` is true, falls back to OCR on embedded images if text extraction
+/// yields very little content (indicating a scanned/image-based PDF).
+fn extract_pdf(path: &Path, ocr_enabled: bool) -> ExtractionResult {
+    // First try normal text extraction
+    let text_result = pdf_extract::extract_text(path);
+
+    let cleaned = match text_result {
         Ok(text) => {
-            // Clean up the extracted text
-            let cleaned = text
-                .lines()
+            text.lines()
                 .map(|line| line.trim())
                 .filter(|line| !line.is_empty())
                 .collect::<Vec<_>>()
-                .join("\n");
+                .join("\n")
+        }
+        Err(_) => String::new(),
+    };
+
+    // If we got substantial text, return it
+    // A scanned PDF typically yields < 100 chars of garbage from pdf-extract
+    let has_substantial_text = cleaned.len() > 100;
+
+    if has_substantial_text || !ocr_enabled {
+        if cleaned.is_empty() {
+            return ExtractionResult::failure("Failed to extract PDF text".to_string());
+        }
+        return ExtractionResult::success(cleaned);
+    }
+
+    // OCR fallback: try extracting text from embedded images in the PDF
+    #[cfg(feature = "ocr")]
+    {
+        let ocr_result = extract_pdf_images_ocr(path);
+        if ocr_result.success && !ocr_result.text.is_empty() {
+            // Combine any sparse text with OCR text
+            if cleaned.is_empty() {
+                return ocr_result;
+            }
+            let combined = format!("{}\n{}", cleaned, ocr_result.text);
+            return ExtractionResult::success(combined);
+        }
+
+        // If OCR also failed but we have some text, return what we have
+        if !cleaned.is_empty() {
+            return ExtractionResult::success(cleaned);
+        }
+        return ExtractionResult::failure(
+            "PDF appears to be scanned but OCR could not extract text".to_string(),
+        );
+    }
+
+    #[cfg(not(feature = "ocr"))]
+    {
+        if cleaned.is_empty() {
+            ExtractionResult::failure(
+                "PDF appears to be scanned. Rebuild with --features ocr for OCR support"
+                    .to_string(),
+            )
+        } else {
             ExtractionResult::success(cleaned)
         }
-        Err(e) => ExtractionResult::failure(format!("Failed to extract PDF text: {}", e)),
+    }
+}
+
+/// Extract text from embedded images in a PDF using OCR.
+/// This handles scanned PDFs where pages are stored as images.
+#[cfg(feature = "ocr")]
+fn extract_pdf_images_ocr(path: &Path) -> ExtractionResult {
+    use lopdf::{Document, Object};
+
+    let doc = match Document::load(path) {
+        Ok(d) => d,
+        Err(e) => {
+            return ExtractionResult::failure(format!("Failed to parse PDF for OCR: {}", e))
+        }
+    };
+
+    let mut all_text: Vec<String> = Vec::new();
+    let mut image_count = 0;
+
+    // Iterate through all objects looking for image streams
+    for (_object_id, object) in &doc.objects {
+        let stream = match object {
+            Object::Stream(ref s) => s,
+            _ => continue,
+        };
+
+        // Check if this is an Image XObject
+        let is_image = stream
+            .dict
+            .get(b"Subtype")
+            .map(|s| matches!(s, Object::Name(ref n) if n == b"Image"))
+            .unwrap_or(false);
+
+        if !is_image {
+            continue;
+        }
+
+        // Get image dimensions
+        let width = match stream.dict.get(b"Width") {
+            Ok(Object::Integer(w)) => *w as u32,
+            _ => continue,
+        };
+        let height = match stream.dict.get(b"Height") {
+            Ok(Object::Integer(h)) => *h as u32,
+            _ => continue,
+        };
+
+        // Skip very small images (icons, thumbnails, etc.)
+        if width < 100 || height < 100 {
+            continue;
+        }
+
+        // Determine the image filter (compression type)
+        let filters = get_stream_filters(&stream.dict);
+
+        // Try to extract and OCR this image
+        if let Some(temp_file) = extract_image_from_pdf_stream(stream, &filters, width, height) {
+            let ocr_result = extract_image_ocr(temp_file.path());
+            if ocr_result.success && !ocr_result.text.trim().is_empty() {
+                all_text.push(ocr_result.text);
+                image_count += 1;
+            }
+        }
+    }
+
+    if all_text.is_empty() {
+        ExtractionResult::failure(format!(
+            "No readable text found in {} PDF image(s)",
+            image_count
+        ))
+    } else {
+        ExtractionResult::success(all_text.join("\n\n"))
+    }
+}
+
+/// Get the list of filters applied to a PDF stream.
+#[cfg(feature = "ocr")]
+fn get_stream_filters(dict: &lopdf::Dictionary) -> Vec<Vec<u8>> {
+    use lopdf::Object;
+
+    match dict.get(b"Filter") {
+        Ok(Object::Name(n)) => vec![n.clone()],
+        Ok(Object::Array(arr)) => arr
+            .iter()
+            .filter_map(|o| {
+                if let Object::Name(n) = o {
+                    Some(n.clone())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// Extract an image from a PDF stream and save to a temporary file.
+/// Returns None if the image format is unsupported or extraction fails.
+#[cfg(feature = "ocr")]
+fn extract_image_from_pdf_stream(
+    stream: &lopdf::Stream,
+    filters: &[Vec<u8>],
+    width: u32,
+    height: u32,
+) -> Option<tempfile::NamedTempFile> {
+    use image::{DynamicImage, GrayImage, RgbImage};
+    use lopdf::Object;
+    use std::io::Write;
+
+    let is_dct = filters.iter().any(|f| f == b"DCTDecode");
+    let is_jpx = filters.iter().any(|f| f == b"JPXDecode");
+    let is_flate = filters.iter().any(|f| f == b"FlateDecode");
+
+    if is_dct {
+        // DCTDecode = JPEG: the stream content is a valid JPEG file
+        let mut temp = tempfile::Builder::new()
+            .suffix(".jpg")
+            .tempfile()
+            .ok()?;
+        temp.write_all(&stream.content).ok()?;
+        temp.flush().ok()?;
+        Some(temp)
+    } else if is_jpx {
+        // JPXDecode = JPEG2000: save the raw stream as .jp2
+        let mut temp = tempfile::Builder::new()
+            .suffix(".jp2")
+            .tempfile()
+            .ok()?;
+        temp.write_all(&stream.content).ok()?;
+        temp.flush().ok()?;
+        Some(temp)
+    } else if is_flate || filters.is_empty() {
+        // FlateDecode or uncompressed: raw pixel data that needs reconstruction
+        let mut stream_clone = stream.clone();
+        stream_clone.decompress();
+        let raw_data = stream_clone.content;
+
+        // Determine color depth
+        let bpc = match stream.dict.get(b"BitsPerComponent") {
+            Ok(Object::Integer(b)) => *b as u8,
+            _ => 8,
+        };
+
+        if bpc != 8 {
+            return None; // Only handle 8-bit images for now
+        }
+
+        // Determine color space (DeviceGray=1ch, DeviceRGB=3ch)
+        let channels = get_color_channels(&stream.dict);
+        let expected_size = (width as usize) * (height as usize) * (channels as usize);
+
+        if raw_data.len() < expected_size {
+            return None; // Data doesn't match expected dimensions
+        }
+
+        // Construct image from raw pixels
+        let img = match channels {
+            1 => {
+                let gray = GrayImage::from_raw(width, height, raw_data)?;
+                DynamicImage::ImageLuma8(gray)
+            }
+            3 => {
+                let rgb = RgbImage::from_raw(width, height, raw_data)?;
+                DynamicImage::ImageRgb8(rgb)
+            }
+            _ => return None,
+        };
+
+        let temp = tempfile::Builder::new()
+            .suffix(".png")
+            .tempfile()
+            .ok()?;
+        img.save(temp.path()).ok()?;
+        Some(temp)
+    } else {
+        None // Unsupported filter (CCITT, JBIG2, etc.)
+    }
+}
+
+/// Determine the number of color channels from a PDF image's ColorSpace.
+#[cfg(feature = "ocr")]
+fn get_color_channels(dict: &lopdf::Dictionary) -> u8 {
+    use lopdf::Object;
+
+    match dict.get(b"ColorSpace") {
+        Ok(Object::Name(ref name)) => match name.as_slice() {
+            b"DeviceGray" | b"CalGray" => 1,
+            b"DeviceRGB" | b"CalRGB" => 3,
+            b"DeviceCMYK" => 4,
+            _ => 3, // Default to RGB
+        },
+        Ok(Object::Array(ref arr)) => {
+            // Indexed or ICCBased color spaces are arrays like [/ICCBased ref]
+            if let Some(Object::Name(ref name)) = arr.first() {
+                match name.as_slice() {
+                    b"ICCBased" => 3, // Most common ICC profiles are RGB
+                    b"Indexed" => 1,  // Palette-based
+                    b"CalGray" => 1,
+                    b"CalRGB" => 3,
+                    _ => 3,
+                }
+            } else {
+                3
+            }
+        }
+        _ => 3, // Default to RGB if ColorSpace is missing or a reference
     }
 }
 

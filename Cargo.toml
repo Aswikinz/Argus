@@ -11,7 +11,7 @@ categories = ["command-line-utilities", "text-processing"]
 
 [features]
 default = []
-ocr = ["leptess", "libc"]
+ocr = ["leptess", "libc", "dep:lopdf", "dep:image", "dep:tempfile"]
 
 [[bin]]
 name = "argus"
@@ -38,6 +38,11 @@ zip = "0.6"
 # OCR (optional)
 leptess = { version = "0.14", optional = true }
 libc = { version = "0.2", optional = true }
+
+# PDF OCR: extract images from scanned PDFs (optional, part of ocr feature)
+lopdf = { version = "0.34", optional = true }
+image = { version = "0.25", optional = true }
+tempfile = { version = "3.24", optional = true }
 
 # File opening
 opener = "0.6"

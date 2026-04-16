@@ -375,7 +375,7 @@ impl SearchEngine {
         let file_type = FileType::from_extension(&ext);
 
         // Get file size
-        let file_size = path.metadata().map(|m| m.len()).unwrap_or(0);
+        let file_size = path.metadata().map_or(0, |m| m.len());
 
         // Extract text
         let extraction = extract_text(path, file_type, &self.config.ocr);

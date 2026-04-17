@@ -29,11 +29,15 @@ fn reports_version() {
 }
 
 #[test]
-fn fails_without_pattern() {
+fn fails_without_pattern_in_non_interactive_context() {
+    // Running without a pattern launches the interactive TUI on a TTY, but
+    // assert_cmd spawns the binary with piped stdio so stdin/stdout are not
+    // terminals. In that case argus should refuse to start the TUI and
+    // surface a clear "pattern required" error instead.
     argus()
         .assert()
         .failure()
-        .stderr(predicate::str::contains("required"));
+        .stderr(predicate::str::contains("pattern is required"));
 }
 
 #[test]

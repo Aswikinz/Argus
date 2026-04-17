@@ -9,5 +9,6 @@ pub mod index;
 #[cfg(feature = "ocrs")]
 pub mod ocrs_backend;
 pub mod search;
+pub mod tui;
 pub mod types;
 pub mod ui;

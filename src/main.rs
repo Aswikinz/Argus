@@ -4,6 +4,7 @@
 //! including PDFs, Word documents, images (with OCR), and code files.
 
 use clap::{Parser, ValueEnum, ValueHint};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process;
 
@@ -57,9 +58,9 @@ impl From<CliOcrEngine> for OcrEngine {
                   argus -iI \"pattern\"             Use index and update it with new files"
 )]
 struct Cli {
-    /// The search pattern (text or regex with -r flag)
-    #[arg(required = true)]
-    pattern: String,
+    /// The search pattern (text or regex with -r flag). Omit to launch the
+    /// interactive TUI where you can compose a search visually.
+    pattern: Option<String>,
 
     /// Directory to search in
     #[arg(
@@ -131,11 +132,6 @@ fn main() {
     // Parse command line arguments
     let cli = Cli::parse();
 
-    // Display banner unless suppressed
-    if !cli.no_banner {
-        display_banner();
-    }
-
     // Validate directory
     if !cli.directory.exists() {
         display_error(&format!(
@@ -178,11 +174,60 @@ fn main() {
         }
     }
 
-    // Build search configuration
     let directory = cli.directory.canonicalize().unwrap_or(cli.directory);
+
+    // Build index configuration (shared by both modes).
+    let index_config = IndexConfig {
+        save_index: cli.save_index,
+        use_index: cli.use_index,
+        index_file: cli.index_file,
+    };
+
+    // If no pattern was given on the command line, launch the interactive TUI.
+    // The TUI lets the user compose their query visually, run it, inspect
+    // results, and loop back to compose another search — ideal for
+    // non-technical users who don't want to memorise flags.
+    //
+    // On a non-interactive stdin/stdout (scripts, CI, piped input) the TUI
+    // cannot run, so we surface the clap-style "pattern required" error
+    // instead. That keeps existing automation working unchanged.
+    let Some(pattern) = cli.pattern else {
+        if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+            display_error(
+                "a search pattern is required when stdin/stdout is not a terminal. \
+                 run `argus <pattern>` or launch argus from an interactive shell.",
+            );
+            process::exit(2);
+        }
+        let prefill = argus::tui::Prefill {
+            directory: directory.clone(),
+            case_sensitive: cli.case_sensitive,
+            use_regex: cli.regex,
+            ocr_enabled: cli.ocr,
+            ocr_engine: cli.ocr_engine.into(),
+            limit: cli.limit,
+            max_depth: cli.max_depth,
+            include_hidden: cli.hidden,
+            extensions: cli.extensions.clone().unwrap_or_default(),
+            show_preview: cli.preview,
+        };
+        if let Err(e) = argus::tui::run(prefill, index_config) {
+            display_error(&format!("TUI error: {e}"));
+            process::exit(1);
+        }
+        #[cfg(feature = "ocr")]
+        suppress_stderr();
+        return;
+    };
+
+    if !cli.no_banner {
+        display_banner();
+    }
+
+    // Build search configuration
     let config = SearchConfig {
         directory: directory.clone(),
-        pattern: cli.pattern,
+        pattern,
         case_sensitive: cli.case_sensitive,
         use_regex: cli.regex,
         ocr: OcrConfig {
@@ -195,13 +240,6 @@ fn main() {
         include_hidden: cli.hidden,
         extensions: cli.extensions.unwrap_or_default(),
         show_preview: cli.preview,
-    };
-
-    // Build index configuration
-    let index_config = IndexConfig {
-        save_index: cli.save_index,
-        use_index: cli.use_index,
-        index_file: cli.index_file,
     };
 
     // Create search engine

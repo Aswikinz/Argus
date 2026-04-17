@@ -13,12 +13,26 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use walkdir::{DirEntry, WalkDir};
 
+/// Shared progress counters that external callers (e.g. the TUI) can poll to
+/// render a live progress bar while the search runs on a worker thread.
+///
+/// `total` is set to the number of discovered files once `collect_files`
+/// completes — it is `0` until then. `current` monotonically increases as
+/// files finish processing.
+#[derive(Debug, Default)]
+pub struct ProgressHandle {
+    pub current: AtomicUsize,
+    pub total: AtomicUsize,
+}
+
 /// The search engine that coordinates file discovery and text matching.
 pub struct SearchEngine {
     config: SearchConfig,
     index_config: IndexConfig,
     pattern: SearchPattern,
     index: Option<Index>,
+    progress: Arc<ProgressHandle>,
+    quiet: bool,
 }
 
 /// Compiled search pattern (either regex or literal).
@@ -43,14 +57,14 @@ impl SearchEngine {
             }
         };
 
-        // Try to load existing index if use_index is enabled
+        // Try to load existing index if use_index is enabled. The load-status
+        // eprintln is intentionally omitted: CLI callers surface the info via
+        // a distinct human-facing line, and TUI callers can't take any extra
+        // output on stderr without corrupting ratatui's screen.
         let index = if index_config.use_index || index_config.save_index {
             let index_path = index_config.get_index_path(&config.directory);
             match Index::load(&index_path) {
-                Ok(idx) => {
-                    eprintln!("  loaded index with {} entries", idx.len());
-                    Some(idx)
-                }
+                Ok(idx) => Some(idx),
                 Err(_) => {
                     if index_config.save_index {
                         // Create new index if we're going to save
@@ -69,36 +83,65 @@ impl SearchEngine {
             index_config,
             pattern,
             index,
+            progress: Arc::new(ProgressHandle::default()),
+            quiet: false,
         })
+    }
+
+    /// Clone of the shared progress counters. Safe to retain across a
+    /// [`Self::search`] call on another thread — the values keep updating
+    /// while the search runs and freeze when it finishes.
+    pub fn progress_handle(&self) -> Arc<ProgressHandle> {
+        self.progress.clone()
+    }
+
+    /// Suppress the built-in `indicatif` progress bar. Callers that render
+    /// their own progress (the TUI) must enable this, otherwise the two
+    /// renderers fight for stdout/stderr and the screen goes haywire.
+    pub fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
     }
 
     /// Execute the search and return results.
     pub fn search(&mut self) -> (Vec<SearchResult>, SearchStats) {
         let start = Instant::now();
 
+        // Reset progress counters so repeated `search` calls on the same
+        // engine start from zero instead of continuing a previous run.
+        self.progress.current.store(0, Ordering::Relaxed);
+        self.progress.total.store(0, Ordering::Relaxed);
+
         // Collect all files to search
         let files = self.collect_files();
         let total_files = files.len();
+        self.progress.total.store(total_files, Ordering::Relaxed);
 
-        // Create progress bar in the MUJI aesthetic: minimal, neutral, no spinner.
-        let pb = ProgressBar::new(total_files as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("  {msg}  {pos}/{len}  {wide_bar}  {percent}%")
-                .unwrap()
-                .progress_chars("━━─"),
-        );
-        pb.set_message("searching");
+        // Built-in indicatif bar for CLI callers. When `quiet` is set (the
+        // TUI path) we use a hidden bar so no escape codes reach stdout and
+        // fight with ratatui's rendering.
+        let pb = if self.quiet {
+            ProgressBar::hidden()
+        } else {
+            let pb = ProgressBar::new(total_files as u64);
+            pb.set_style(
+                ProgressStyle::default_bar()
+                    .template("  {msg}  {pos}/{len}  {wide_bar}  {percent}%")
+                    .unwrap()
+                    .progress_chars("━━─"),
+            );
+            pb.set_message("searching");
+            pb
+        };
 
         // Thread-safe containers for results and stats
         let results: Arc<Mutex<Vec<SearchResult>>> = Arc::new(Mutex::new(Vec::new()));
         let stats = Arc::new(Mutex::new(SearchStats::new()));
-        let files_processed = Arc::new(AtomicUsize::new(0));
         let new_index_entries: Arc<Mutex<Vec<IndexEntry>>> = Arc::new(Mutex::new(Vec::new()));
 
         // Clone index for thread-safe access
         let index_ref = self.index.as_ref().map(|i| Arc::new(i.clone()));
         let save_index = self.index_config.save_index;
+        let progress = self.progress.clone();
 
         // Process files in parallel using rayon
         files.par_iter().for_each(|file_path| {
@@ -132,7 +175,7 @@ impl SearchEngine {
             }
 
             // Update progress
-            let processed = files_processed.fetch_add(1, Ordering::Relaxed) + 1;
+            let processed = progress.current.fetch_add(1, Ordering::Relaxed) + 1;
             pb.set_position(processed as u64);
         });
 
@@ -156,8 +199,10 @@ impl SearchEngine {
                 // Save the index
                 let index_path = self.index_config.get_index_path(&self.config.directory);
                 if let Err(e) = index.save(&index_path) {
-                    eprintln!("  warning: failed to save index: {e}");
-                } else {
+                    if !self.quiet {
+                        eprintln!("  warning: failed to save index: {e}");
+                    }
+                } else if !self.quiet {
                     eprintln!(
                         "  saved index with {} entries to {}",
                         index.len(),
@@ -208,11 +253,38 @@ impl SearchEngine {
             .map(|e| e.to_lowercase().trim_start_matches('.').to_string())
             .collect();
 
+        // Resolve the index file path so we can always exclude it from the
+        // walk. Without this filter, a cached index with previously-matched
+        // text would itself become a "match" on the next search — confusing
+        // and wrong. We compare both the raw and canonicalized forms so the
+        // exclusion works whether or not the index lives inside the search
+        // root or was passed as a relative path.
+        let index_path_raw = self.index_config.get_index_path(&self.config.directory);
+        let index_path_abs = index_path_raw.canonicalize().ok();
+
         walker
             .into_iter()
             .filter_entry(|e| self.should_process_entry(e))
             .filter_map(std::result::Result::ok)
             .filter(|e| e.file_type().is_file())
+            .filter(|e| {
+                // Always exclude the Argus index file (both the configured one
+                // and any bare `.argus_index.json` that happens to be lying
+                // around). This rule runs even when --hidden is set.
+                let path = e.path();
+                if path.file_name().and_then(|n| n.to_str()) == Some(".argus_index.json") {
+                    return false;
+                }
+                if path == index_path_raw {
+                    return false;
+                }
+                if let Some(ref abs) = index_path_abs {
+                    if path.canonicalize().ok().as_ref() == Some(abs) {
+                        return false;
+                    }
+                }
+                true
+            })
             .filter(|e| {
                 // Filter by extension if specified
                 if extensions.is_empty() {
@@ -837,5 +909,152 @@ mod tests {
         let (results, _) = engine.search();
         assert_eq!(results.len(), 2);
         assert!(results[0].path.to_string_lossy().ends_with("many.txt"));
+    }
+
+    // ---- Progress handle + quiet mode -------------------------------------
+
+    #[test]
+    fn progress_handle_reports_total_and_current_after_search() {
+        let dir = tempdir().unwrap();
+        for i in 0..4 {
+            fs::write(dir.path().join(format!("f{i}.txt")), "needle").unwrap();
+        }
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let progress = engine.progress_handle();
+        let (_results, _stats) = engine.search();
+        // After search completes, total and current must reflect the scan.
+        assert_eq!(progress.total.load(Ordering::Relaxed), 4);
+        assert_eq!(progress.current.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn progress_handle_resets_between_runs() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let progress = engine.progress_handle();
+
+        let _ = engine.search();
+        let after_first = progress.current.load(Ordering::Relaxed);
+        assert!(after_first > 0);
+
+        // A second search on the same engine must start from zero.
+        let _ = engine.search();
+        assert_eq!(
+            progress.current.load(Ordering::Relaxed),
+            after_first,
+            "second run should end at the same total as the first"
+        );
+    }
+
+    #[test]
+    fn set_quiet_is_respected_without_breaking_results() {
+        // Not much to assert on stderr output (it's captured by the test
+        // harness), but we can at least verify that turning quiet on doesn't
+        // break the search itself.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        engine.set_quiet(true);
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+    }
+
+    // ---- Index-file exclusion ---------------------------------------------
+
+    #[test]
+    fn index_file_is_never_included_in_results() {
+        // Save an index, then search for a term that appears inside the
+        // index JSON. The index file itself must not show up as a match.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("hit.txt"), "distinctive-token payload").unwrap();
+
+        let save_cfg = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "distinctive-token".into(),
+            ..Default::default()
+        };
+        let index_config = IndexConfig {
+            save_index: true,
+            use_index: false,
+            index_file: None, // default .argus_index.json in the search dir
+        };
+        let mut engine = SearchEngine::new(save_cfg.clone(), index_config.clone()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(dir.path().join(".argus_index.json").exists());
+
+        // Second run: with --hidden the index file would normally be scanned.
+        // The dedicated exclusion must still remove it.
+        let second_cfg = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "distinctive-token".into(),
+            include_hidden: true,
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(second_cfg, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        let paths: Vec<String> = results
+            .iter()
+            .map(|r| r.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p.ends_with(".argus_index.json")),
+            "index file should be excluded even with --hidden, got: {paths:?}",
+        );
+    }
+
+    #[test]
+    fn custom_index_file_path_is_also_excluded() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "token-x content").unwrap();
+        let custom_index = dir.path().join("my_custom.json");
+
+        let save_cfg = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "token-x".into(),
+            ..Default::default()
+        };
+        let index_config = IndexConfig {
+            save_index: true,
+            use_index: false,
+            index_file: Some(custom_index.clone()),
+        };
+        let mut engine = SearchEngine::new(save_cfg, index_config.clone()).unwrap();
+        let _ = engine.search();
+        assert!(custom_index.exists());
+
+        // Now search again with the same custom-index config — the file
+        // must not appear in the results.
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "token-x".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
+        let (results, _) = engine.search();
+        let paths: Vec<String> = results
+            .iter()
+            .map(|r| r.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p.ends_with("my_custom.json")),
+            "custom index file should be excluded, got: {paths:?}",
+        );
     }
 }

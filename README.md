@@ -16,7 +16,10 @@ Named after Argus Panoptes, the all-seeing giant from Greek mythology, **Argus**
 - **Beautiful CLI**: Colorful output with file type icons, confidence bars, and match highlighting
 - **Interactive Selection**: Navigate results with arrow keys and open files instantly
 - **Regex Support**: Full regex pattern matching when you need precise searches
-- **OCR Capability**: Extract and search text from images using Tesseract (fast, native C++ via leptess) **or** `ocrs` (pure-Rust ONNX engine, higher accuracy on modern docs) — both selectable from the CLI and the TUI
+- **Three OCR backends, pick your tradeoff**:
+  - **Tesseract** — fast, native C++ via leptess (feature = `ocr`)
+  - **ocrs** — pure-Rust ONNX engine, higher accuracy on clean modern docs (feature = `ocrs`)
+  - **Vision-LLM** *(new!)* — any OpenAI-compatible vision model over HTTP (feature = `vision-llm`). Defaults to Ollama + [`glm-ocr`](https://ollama.com/library/glm-ocr) locally (~1 GB, #1 on OmniDocBench). Handles **handwriting, newspapers, and rotated/misaligned scans** — the three cases the CPU backends can't. Also speaks to OpenAI / Anthropic / Mistral / Groq / LM Studio for users without local GPUs.
 - **Cross-Platform**: Works on Linux and Windows
 
 ## Installation
@@ -37,6 +40,13 @@ cargo build --release --features ocr
 # Build with the pure-Rust ocrs ONNX backend (no Tesseract needed,
 # downloads ~25 MB of models on first use)
 cargo build --release --features ocrs
+
+# Build with the vision-LLM OCR backend (for handwriting, newspapers,
+# messy scans). Requires Ollama or any OpenAI-compatible endpoint at runtime.
+cargo build --release --features vision-llm
+
+# All three OCR backends at once
+cargo build --release --features "ocr,ocrs,vision-llm"
 
 # Install to your PATH
 cargo install --path .
@@ -112,6 +122,15 @@ argus -o "text in screenshot"
 # Use the ocrs ONNX engine instead of Tesseract
 argus -o --ocr-engine ocrs "text in screenshot"
 
+# Use the vision-LLM backend (Ollama + glm-ocr) for handwriting / newspapers
+# Requires: `ollama pull glm-ocr` and `cargo build --features vision-llm`
+argus -o --ocr-engine vision-llm "handwritten shopping list"
+
+# Use a cloud vision API instead of Ollama
+ARGUS_OCR_API_KEY=sk-... argus -o --ocr-engine vision-llm \
+    --ocr-endpoint https://api.openai.com/v1/chat/completions \
+    --ocr-model gpt-4o-mini "receipt total"
+
 # Show content preview
 argus -p "error"
 
@@ -140,6 +159,51 @@ argus -iI "pattern"
 argus -i --index-file ~/my_index.json "pattern"
 ```
 
+## Vision-LLM OCR (for handwriting, newspapers, messy scans)
+
+Tesseract and ocrs are great on clean printed text, but they both fall off a cliff on **handwritten notes**, **newspapers with multi-column or rotated layouts**, and **skewed/misaligned scans**. The `vision-llm` backend delegates OCR to a vision model over HTTP and handles all three of those cases far better.
+
+**Quick start with Ollama (local, offline, free)**:
+
+```bash
+# 1. Install Ollama — one-line installer on Linux / macOS, MSI on Windows.
+#    https://ollama.com/download
+
+# 2. Pull the default model (~1 GB, specialised for document OCR)
+ollama pull glm-ocr
+
+# 3. Build argus with the feature (Ollama doesn't need to be running yet)
+cargo build --release --features vision-llm
+
+# 4. Run — argus health-checks the endpoint up front, so a mis-typed URL
+#    fails fast instead of piling up per-image timeouts.
+argus -o --ocr-engine vision-llm "handwritten word"
+```
+
+**Cloud (OpenAI, Anthropic-compat, Mistral, Groq, Together, LM Studio)**:
+
+```bash
+export ARGUS_OCR_API_KEY=sk-...
+argus -o --ocr-engine vision-llm \
+    --ocr-endpoint https://api.openai.com/v1/chat/completions \
+    --ocr-model gpt-4o-mini \
+    "invoice total"
+```
+
+The API key is only ever read from the `ARGUS_OCR_API_KEY` environment variable, never from the CLI, so it doesn't leak into shell history or `ps` output.
+
+**Recommended local models** (install with `ollama pull <name>`):
+
+| Model | Size | Best at | Notes |
+|---|---|---|---|
+| **`glm-ocr`** *(default)* | ~1 GB | handwriting, newspapers, tables, math, multilingual docs | #1 on OmniDocBench V1.5, purpose-built for OCR, ~1.86 pages/s |
+| `qwen2.5vl:7b` | ~5 GB | general multimodal + strong OCR | larger and slower, better at scene text and reasoning |
+| `minicpm-v:8b` | ~5 GB | multilingual, CJK | good fallback on mixed-language pages |
+| `llama3.2-vision:11b` | ~7.9 GB | general purpose | slightly over the 5 GB budget |
+| `moondream:1.8b` | ~1.5 GB | low-end hardware | weaker but fast |
+
+You can point `--ocr-model` at anything Ollama can serve; argus only cares that the endpoint speaks OpenAI-compatible chat completions.
+
 ## Command Line Options
 
 | Flag | Long | Description | Default |
@@ -149,7 +213,11 @@ argus -i --index-file ~/my_index.json "pattern"
 | `-l` | `--limit` | Maximum results | 20 |
 | `-s` | `--case-sensitive` | Case-sensitive search | Off |
 | `-o` | `--ocr` | Enable OCR for images | Off |
-| | `--ocr-engine` | Which OCR backend (`tesseract` \| `ocrs`) | Depends on enabled feature |
+| | `--ocr-engine` | Which OCR backend (`tesseract` \| `ocrs` \| `vision-llm`) | Depends on enabled feature |
+| | `--ocr-endpoint` | Vision-LLM chat-completions URL | `http://localhost:11434/v1/chat/completions` |
+| | `--ocr-model` | Vision-LLM model name | `glm-ocr` |
+| | `--ocr-prompt` | Instruction passed to the vision LLM | "Extract all visible text…" |
+| | `--ocr-timeout` | Vision-LLM per-request timeout (seconds) | 120 |
 | `-r` | `--regex` | Use regex matching | Off |
 | `-p` | `--preview` | Show match previews | Off |
 | `-e` | `--extensions` | Filter by extensions (comma-separated) | All |
@@ -160,7 +228,12 @@ argus -i --index-file ~/my_index.json "pattern"
 | `-I` | `--use-index` | Use existing index | Off |
 | | `--index-file` | Custom index file path | `.argus_index.json` |
 
-Every option above is also surfaced in the TUI (with the exception of `--index-file`, which is an advanced override kept on the CLI only; the TUI uses whatever path is in effect when you launched argus, defaulting to `.argus_index.json`).
+| Env var | Purpose |
+|---|---|
+| `ARGUS_OCR_API_KEY` | Bearer token for the vision-LLM endpoint (OpenAI / Anthropic-compat / etc.). Never read from argv. |
+| `ARGUS_OCRS_MODELS_DIR` | Override the ocrs model cache directory. |
+
+Every option above is also surfaced in the TUI (with the exception of `--index-file`, `--ocr-endpoint`, `--ocr-model`, `--ocr-prompt`, and `--ocr-timeout`, which stay CLI-only to keep the Setup view compact — the TUI uses whatever values were in effect when argus was launched).
 
 ## Output Example
 
@@ -212,14 +285,15 @@ build.bat
 
 ```
 src/
-├── main.rs            # CLI entry point; routes to the TUI or the classic CLI flow
-├── types.rs           # Core data structures (SearchResult, Match, FileType, configs)
-├── search.rs          # Parallel search engine with a shared progress handle
-├── extractors.rs      # Text extraction for each file format
-├── index.rs           # Index caching for extracted text
-├── ocrs_backend.rs    # Pure-Rust ocrs ONNX OCR backend (feature = "ocrs")
-├── ui.rs              # Classic terminal output and interactive file selector
-└── tui.rs             # Full-screen ratatui dashboard (Setup → Searching → Results)
+├── main.rs                 # CLI entry point; routes to the TUI or the classic CLI flow
+├── types.rs                # Core data structures (SearchResult, Match, FileType, configs)
+├── search.rs               # Parallel search engine with a shared progress handle
+├── extractors.rs           # Text extraction for each file format; OCR dispatch
+├── index.rs                # Index caching for extracted text
+├── ocrs_backend.rs         # Pure-Rust ocrs ONNX OCR backend (feature = "ocrs")
+├── vision_llm_backend.rs   # Vision-LLM OCR via OpenAI-compat HTTP (feature = "vision-llm")
+├── ui.rs                   # Classic terminal output and interactive file selector
+└── tui.rs                  # Full-screen ratatui dashboard (Setup → Searching → Results)
 ```
 
 ## Indexing
@@ -272,9 +346,20 @@ The index is stored as human-readable JSON:
 
 ### OCR not working
 
+**Tesseract** (`--features ocr`):
 1. Ensure Tesseract is installed and in your PATH
 2. Rebuild with: `cargo build --release --features ocr`
 3. Check Tesseract works: `tesseract --version`
+
+**ocrs** (`--features ocrs`):
+1. First run downloads ~25 MB of models — ensure network connectivity, or pre-populate `ARGUS_OCRS_MODELS_DIR`
+2. If a proxy / firewall blocks S3 downloads, set `ARGUS_OCRS_MODELS_DIR` to a directory containing `text-detection.rten` and `text-recognition.rten`
+
+**Vision-LLM** (`--features vision-llm`):
+1. `argus: vision-llm unavailable: vision-llm endpoint unreachable at …` — confirm `ollama serve` is running, and that `ollama list` shows the model you passed to `--ocr-model`. Pull it with e.g. `ollama pull glm-ocr`.
+2. `argus: vision-llm HTTP 401: …` — for cloud endpoints, make sure `ARGUS_OCR_API_KEY` is exported in the same shell that runs argus.
+3. Slow first call — the first request spins up the model in Ollama; subsequent calls are much faster.
+4. Wrong model / 404 — Ollama model names often have a tag suffix (`qwen2.5vl:7b`, not `qwen2.5vl`). Check `ollama list`.
 
 ### Permission denied errors
 

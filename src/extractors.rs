@@ -61,7 +61,7 @@ pub fn extract_text(path: &Path, file_type: FileType, ocr: &OcrConfig) -> Extrac
         FileType::Docx => extract_docx(path),
         FileType::Image => {
             if ocr.enabled {
-                extract_image_ocr(path, ocr.engine)
+                extract_image_ocr(path, ocr)
             } else {
                 ExtractionResult::failure("OCR not enabled for images".to_string())
             }
@@ -139,9 +139,9 @@ fn extract_pdf(path: &Path, ocr: &OcrConfig) -> ExtractionResult {
     }
 
     // OCR fallback: try extracting text from embedded images in the PDF
-    #[cfg(any(feature = "ocr", feature = "ocrs"))]
+    #[cfg(any(feature = "ocr", feature = "ocrs", feature = "vision-llm"))]
     {
-        let ocr_result = extract_pdf_images_ocr(path, ocr.engine);
+        let ocr_result = extract_pdf_images_ocr(path, ocr);
         if ocr_result.success && !ocr_result.text.is_empty() {
             // Combine any sparse text with OCR text
             if cleaned.is_empty() {
@@ -160,12 +160,12 @@ fn extract_pdf(path: &Path, ocr: &OcrConfig) -> ExtractionResult {
         )
     }
 
-    #[cfg(not(any(feature = "ocr", feature = "ocrs")))]
+    #[cfg(not(any(feature = "ocr", feature = "ocrs", feature = "vision-llm")))]
     {
         let _ = ocr;
         if cleaned.is_empty() {
             ExtractionResult::failure(
-                "PDF appears to be scanned. Rebuild with --features ocr or --features ocrs for OCR support"
+                "PDF appears to be scanned. Rebuild with --features ocr, --features ocrs, or --features vision-llm for OCR support"
                     .to_string(),
             )
         } else {
@@ -176,8 +176,8 @@ fn extract_pdf(path: &Path, ocr: &OcrConfig) -> ExtractionResult {
 
 /// Extract text from embedded images in a PDF using OCR.
 /// This handles scanned PDFs where pages are stored as images.
-#[cfg(any(feature = "ocr", feature = "ocrs"))]
-fn extract_pdf_images_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
+#[cfg(any(feature = "ocr", feature = "ocrs", feature = "vision-llm"))]
+fn extract_pdf_images_ocr(path: &Path, ocr: &OcrConfig) -> ExtractionResult {
     use lopdf::{Document, Object};
 
     let doc = match Document::load(path) {
@@ -224,7 +224,7 @@ fn extract_pdf_images_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
 
         // Try to extract and OCR this image
         if let Some(temp_file) = extract_image_from_pdf_stream(stream, &filters, width, height) {
-            let ocr_result = extract_image_ocr(temp_file.path(), engine);
+            let ocr_result = extract_image_ocr(temp_file.path(), ocr);
             if ocr_result.success && !ocr_result.text.trim().is_empty() {
                 all_text.push(ocr_result.text);
                 image_count += 1;
@@ -242,7 +242,7 @@ fn extract_pdf_images_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
 }
 
 /// Get the list of filters applied to a PDF stream.
-#[cfg(any(feature = "ocr", feature = "ocrs"))]
+#[cfg(any(feature = "ocr", feature = "ocrs", feature = "vision-llm"))]
 fn get_stream_filters(dict: &lopdf::Dictionary) -> Vec<Vec<u8>> {
     use lopdf::Object;
 
@@ -264,7 +264,7 @@ fn get_stream_filters(dict: &lopdf::Dictionary) -> Vec<Vec<u8>> {
 
 /// Extract an image from a PDF stream and save to a temporary file.
 /// Returns None if the image format is unsupported or extraction fails.
-#[cfg(any(feature = "ocr", feature = "ocrs"))]
+#[cfg(any(feature = "ocr", feature = "ocrs", feature = "vision-llm"))]
 fn extract_image_from_pdf_stream(
     stream: &lopdf::Stream,
     filters: &[Vec<u8>],
@@ -337,7 +337,7 @@ fn extract_image_from_pdf_stream(
 }
 
 /// Determine the number of color channels from a PDF image's ColorSpace.
-#[cfg(any(feature = "ocr", feature = "ocrs"))]
+#[cfg(any(feature = "ocr", feature = "ocrs", feature = "vision-llm"))]
 fn get_color_channels(dict: &lopdf::Dictionary) -> u8 {
     use lopdf::Object;
 
@@ -452,6 +452,9 @@ fn extract_text_from_docx_xml(xml: &str) -> String {
 ///
 /// Returns `None` when the image cannot be loaded or the temp file cannot be
 /// created; callers should fall back to handing the original path to OCR.
+///
+/// Only the Tesseract and ocrs backends actually call this — vision-LLMs get
+/// the raw image bytes so they can apply their own preprocessing.
 #[cfg(any(feature = "ocr", feature = "ocrs"))]
 fn preprocess_for_ocr(path: &Path) -> Option<tempfile::NamedTempFile> {
     /// Upscale images whose shortest edge is below this so OCR sees crisp text.
@@ -565,10 +568,12 @@ fn extract_image_ocr_ocrs(path: &Path) -> ExtractionResult {
 
 /// Dispatch OCR to the backend selected by configuration.
 ///
-/// Returns a descriptive failure result if the chosen backend was not compiled
-/// in, so users know which feature flag to enable.
-fn extract_image_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
-    match engine {
+/// Takes the whole `OcrConfig` (not just the engine) because the `VisionLlm`
+/// backend needs access to `vision_llm` sub-config — endpoint, model,
+/// prompt, and timeout. Returns a descriptive failure result if the chosen
+/// backend was not compiled in, so users know which feature flag to enable.
+fn extract_image_ocr(path: &Path, ocr: &OcrConfig) -> ExtractionResult {
+    match ocr.engine {
         OcrEngine::Tesseract => {
             #[cfg(feature = "ocr")]
             {
@@ -595,6 +600,41 @@ fn extract_image_ocr(path: &Path, engine: OcrEngine) -> ExtractionResult {
                 )
             }
         }
+        OcrEngine::VisionLlm => {
+            #[cfg(feature = "vision-llm")]
+            {
+                extract_image_ocr_vision_llm(path, &ocr.vision_llm)
+            }
+            #[cfg(not(feature = "vision-llm"))]
+            {
+                let _ = path;
+                let _ = ocr;
+                ExtractionResult::failure(
+                    "vision-llm backend not compiled. Rebuild with --features vision-llm"
+                        .to_string(),
+                )
+            }
+        }
+    }
+}
+
+/// Extract text from an image using a vision LLM (Ollama or OpenAI-compatible).
+#[cfg(feature = "vision-llm")]
+fn extract_image_ocr_vision_llm(
+    path: &Path,
+    cfg: &crate::types::VisionLlmConfig,
+) -> ExtractionResult {
+    match crate::vision_llm_backend::recognize(path, cfg) {
+        Ok(text) => {
+            let cleaned = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            ExtractionResult::success(cleaned)
+        }
+        Err(e) => ExtractionResult::failure(format!("vision-llm OCR failed: {e}")),
     }
 }
 

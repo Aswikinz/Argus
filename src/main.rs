@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process;
 
 use argus::search::SearchEngine;
-use argus::types::{IndexConfig, OcrConfig, OcrEngine, SearchConfig};
+use argus::types::{IndexConfig, OcrConfig, OcrEngine, SearchConfig, VisionLlmConfig};
 use argus::ui::{
     display_banner, display_error, display_farewell, display_results, flush, interactive_select,
     open_file,
@@ -23,6 +23,11 @@ enum CliOcrEngine {
     /// ocrs ONNX engine. Higher accuracy on modern docs; needs the `ocrs`
     /// feature. Downloads ~25 MB of models on first use.
     Ocrs,
+    /// Vision-LLM over HTTP (OpenAI-compatible). Defaults to Ollama +
+    /// `glm-ocr` locally. Dramatic accuracy gains on handwriting,
+    /// newspapers, and rotated scans. Needs the `vision-llm` feature.
+    #[value(name = "vision-llm")]
+    VisionLlm,
 }
 
 impl From<CliOcrEngine> for OcrEngine {
@@ -30,6 +35,7 @@ impl From<CliOcrEngine> for OcrEngine {
         match value {
             CliOcrEngine::Tesseract => OcrEngine::Tesseract,
             CliOcrEngine::Ocrs => OcrEngine::Ocrs,
+            CliOcrEngine::VisionLlm => OcrEngine::VisionLlm,
         }
     }
 }
@@ -52,6 +58,10 @@ impl From<CliOcrEngine> for OcrEngine {
                   argus -e pdf,docx \"report\"      Search only in PDF and DOCX files\n    \
                   argus -o \"text in image\"        Enable OCR for images and scanned PDFs\n    \
                   argus -o -e pdf \"invoice\"       Search scanned PDF documents via OCR\n    \
+                  argus -o --ocr-engine vision-llm \"handwriting\"\n    \
+                  \\                              Use Ollama + glm-ocr for handwriting / newspapers\n    \
+                  argus -o --ocr-engine vision-llm --ocr-endpoint https://api.openai.com/v1/chat/completions\n    \
+                  \\    --ocr-model gpt-4o-mini \"invoice\"   Use a cloud provider (ARGUS_OCR_API_KEY)\n    \
                   argus -s -l 50 \"Error\"          Case-sensitive, limit to 50 results\n    \
                   argus -i \"pattern\"              Save index for faster future searches\n    \
                   argus -I \"pattern\"              Use existing index if available\n    \
@@ -86,6 +96,35 @@ struct Cli {
     /// OCR backend to use when --ocr is enabled
     #[arg(long = "ocr-engine", value_enum, default_value_t = default_cli_engine())]
     ocr_engine: CliOcrEngine,
+
+    /// Vision-LLM endpoint (OpenAI-compatible chat-completions URL). Used only
+    /// when --ocr-engine=vision-llm. Defaults to a local Ollama instance.
+    #[arg(
+        long = "ocr-endpoint",
+        default_value = "http://localhost:11434/v1/chat/completions",
+        value_name = "URL"
+    )]
+    ocr_endpoint: String,
+
+    /// Vision-LLM model name. Used only when --ocr-engine=vision-llm.
+    /// The default targets Ollama's `glm-ocr` — the 0.9 B OCR-specialised model
+    /// that tops OmniDocBench. Other examples: qwen2.5vl:7b, minicpm-v:8b,
+    /// gpt-4o-mini, claude-sonnet-4-5.
+    #[arg(long = "ocr-model", default_value = "glm-ocr", value_name = "NAME")]
+    ocr_model: String,
+
+    /// Instruction prompt sent to the vision LLM. Override for tables, math,
+    /// specific languages, etc.
+    #[arg(
+        long = "ocr-prompt",
+        default_value = "Extract all visible text from this image. Preserve line breaks and reading order. Return only the text — no commentary, no formatting, no explanations.",
+        value_name = "TEXT"
+    )]
+    ocr_prompt: String,
+
+    /// Per-request timeout for the vision-LLM backend, in seconds.
+    #[arg(long = "ocr-timeout", default_value_t = 120, value_name = "SECS")]
+    ocr_timeout: u64,
 
     /// Use regex pattern matching
     #[arg(short = 'r', long = "regex")]
@@ -149,6 +188,19 @@ fn main() {
         process::exit(1);
     }
 
+    // Assemble vision-LLM config up front so both the CLI path and the TUI
+    // Prefill see the same values. API key is sourced from the environment
+    // so it never appears in argv or shell history.
+    let vision_llm_config = VisionLlmConfig {
+        endpoint: cli.ocr_endpoint.clone(),
+        model: cli.ocr_model.clone(),
+        api_key: std::env::var("ARGUS_OCR_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        prompt: cli.ocr_prompt.clone(),
+        timeout_secs: cli.ocr_timeout,
+    };
+
     // Check OCR availability
     if cli.ocr {
         match cli.ocr_engine {
@@ -168,6 +220,22 @@ fn main() {
                 #[cfg(feature = "ocrs")]
                 if let Err(e) = argus::ocrs_backend::ensure_ready() {
                     display_error(&format!("ocrs unavailable: {e}"));
+                    process::exit(1);
+                }
+            }
+            CliOcrEngine::VisionLlm => {
+                #[cfg(not(feature = "vision-llm"))]
+                eprintln!(
+                    "  warning: vision-llm OCR not compiled. Rebuild with --features vision-llm"
+                );
+
+                // Health-check the endpoint up front. Without this, a wrong
+                // URL or an Ollama daemon that isn't running would surface as
+                // a per-file timeout during the parallel scan — confusing and
+                // slow. A fast fail here is much kinder.
+                #[cfg(feature = "vision-llm")]
+                if let Err(e) = argus::vision_llm_backend::ensure_ready(&vision_llm_config) {
+                    display_error(&format!("vision-llm unavailable: {e}"));
                     process::exit(1);
                 }
             }
@@ -205,6 +273,7 @@ fn main() {
             use_regex: cli.regex,
             ocr_enabled: cli.ocr,
             ocr_engine: cli.ocr_engine.into(),
+            vision_llm: vision_llm_config.clone(),
             limit: cli.limit,
             max_depth: cli.max_depth,
             include_hidden: cli.hidden,
@@ -233,6 +302,7 @@ fn main() {
         ocr: OcrConfig {
             enabled: cli.ocr,
             engine: cli.ocr_engine.into(),
+            vision_llm: vision_llm_config,
             ..OcrConfig::default()
         },
         limit: cli.limit,
@@ -287,6 +357,11 @@ fn main() {
 }
 
 /// The default OCR engine shown in `--help`, derived from compile features.
+///
+/// Preference order: Tesseract → Ocrs → VisionLlm. We deliberately only
+/// auto-select VisionLlm as the default when neither CPU backend is
+/// compiled, so users who've built with `--features ocr` keep their
+/// existing behaviour unchanged.
 fn default_cli_engine() -> CliOcrEngine {
     #[cfg(feature = "ocr")]
     {
@@ -296,7 +371,11 @@ fn default_cli_engine() -> CliOcrEngine {
     {
         CliOcrEngine::Ocrs
     }
-    #[cfg(not(any(feature = "ocr", feature = "ocrs")))]
+    #[cfg(all(not(feature = "ocr"), not(feature = "ocrs"), feature = "vision-llm"))]
+    {
+        CliOcrEngine::VisionLlm
+    }
+    #[cfg(not(any(feature = "ocr", feature = "ocrs", feature = "vision-llm")))]
     {
         CliOcrEngine::Tesseract
     }

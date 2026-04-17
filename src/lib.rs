@@ -12,3 +12,5 @@ pub mod search;
 pub mod tui;
 pub mod types;
 pub mod ui;
+#[cfg(feature = "vision-llm")]
+pub mod vision_llm_backend;

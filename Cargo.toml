@@ -26,6 +26,13 @@ ocrs = [
     "dep:image",
     "dep:tempfile",
 ]
+# Vision-LLM backend — POSTs base64-encoded images to any OpenAI-compatible
+# chat-completions endpoint. Designed for Ollama + `glm-ocr` (~1 GB,
+# purpose-built for document OCR) as the default, but works with any VLM
+# Ollama hosts and with cloud APIs (OpenAI, Anthropic compat, Mistral, Groq).
+# The pay-off is big accuracy gains on handwriting, newspapers, and
+# misaligned scans — the three cases Tesseract and ocrs both struggle on.
+vision-llm = ["dep:ureq", "dep:base64", "dep:image", "dep:tempfile", "dep:lopdf"]
 
 [[bin]]
 name = "argus"
@@ -65,8 +72,15 @@ libc = { version = "0.2", optional = true }
 ocrs = { version = "=0.10.0", optional = true }
 rten = { version = "=0.16.0", optional = true }
 rten-imageproc = { version = "=0.16.0", optional = true }
-ureq = { version = "2.12", optional = true, default-features = false, features = ["tls"] }
+# `ureq` is shared between the `ocrs` feature (model downloads) and the
+# `vision-llm` feature (OpenAI-compatible chat completions). The `json`
+# subfeature is required by the vision-llm payload writer.
+ureq = { version = "2.12", optional = true, default-features = false, features = ["tls", "json"] }
 directories = { version = "5.0", optional = true }
+
+# Vision-LLM dependency (optional, gated by the `vision-llm` feature).
+# Used to encode image bytes as `data:image/png;base64,…` in the chat payload.
+base64 = { version = "0.22", optional = true }
 
 # PDF OCR and image preprocessing (shared by both OCR backends).
 # `image`'s default features pull in `ravif`/`avif-serialize` which now

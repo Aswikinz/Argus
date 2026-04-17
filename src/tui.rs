@@ -36,7 +36,9 @@ use ratatui::widgets::{
 use ratatui::{Frame, Terminal};
 
 use crate::search::SearchEngine;
-use crate::types::{IndexConfig, OcrConfig, OcrEngine, SearchConfig, SearchResult, SearchStats};
+use crate::types::{
+    IndexConfig, OcrConfig, OcrEngine, SearchConfig, SearchResult, SearchStats, VisionLlmConfig,
+};
 
 /// Values passed in from the command line that pre-populate the Setup form.
 ///
@@ -48,6 +50,10 @@ pub struct Prefill {
     pub use_regex: bool,
     pub ocr_enabled: bool,
     pub ocr_engine: OcrEngine,
+    /// Resolved vision-LLM config (endpoint, model, api key from env,
+    /// prompt, timeout). The TUI surfaces this as a read-only info line —
+    /// editing happens on the CLI only.
+    pub vision_llm: VisionLlmConfig,
     pub limit: usize,
     pub max_depth: Option<usize>,
     pub include_hidden: bool,
@@ -158,6 +164,36 @@ fn max_depth_label(d: Option<usize>) -> String {
         None => "unlimited".to_string(),
         Some(n) => format!("{n} levels"),
     }
+}
+
+/// Rotate through the OCR engine picker options. Order mirrors the visual
+/// order of the chips in `draw_ocr_engine_box` so the cursor animation
+/// matches.
+fn cycle_ocr_engine(current: OcrEngine, forward: bool) -> OcrEngine {
+    if forward {
+        match current {
+            OcrEngine::Tesseract => OcrEngine::Ocrs,
+            OcrEngine::Ocrs => OcrEngine::VisionLlm,
+            OcrEngine::VisionLlm => OcrEngine::Tesseract,
+        }
+    } else {
+        match current {
+            OcrEngine::Tesseract => OcrEngine::VisionLlm,
+            OcrEngine::Ocrs => OcrEngine::Tesseract,
+            OcrEngine::VisionLlm => OcrEngine::Ocrs,
+        }
+    }
+}
+
+/// Condense a full chat-completions URL down to `host[:port]` so the info
+/// line doesn't overrun the OCR engine box on narrow terminals.
+fn shorten_endpoint(url: &str) -> String {
+    if let Some(after_scheme) = url.find("://").map(|i| i + 3) {
+        let rest = &url[after_scheme..];
+        let end = rest.find('/').unwrap_or(rest.len());
+        return rest[..end].to_string();
+    }
+    url.to_string()
 }
 
 struct ChipList {
@@ -319,6 +355,9 @@ struct App {
     flags: Flags,
     limit: usize,
     ocr_engine: OcrEngine,
+    /// Vision-LLM config carried from the CLI flags. Not editable in the
+    /// TUI — we show it as a read-only info line under the engine picker.
+    vision_llm: VisionLlmConfig,
     max_depth: Option<usize>,
     focus: Focus,
     // Shared
@@ -354,6 +393,7 @@ impl App {
             },
             limit,
             ocr_engine: prefill.ocr_engine,
+            vision_llm: prefill.vision_llm,
             max_depth: prefill.max_depth,
             focus: Focus::Pattern,
             index_config,
@@ -472,15 +512,11 @@ impl App {
                 _ => {}
             },
             Focus::OcrEnginePicker => match key.code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Char(' ')
-                | KeyCode::Char('h')
-                | KeyCode::Char('l') => {
-                    self.ocr_engine = match self.ocr_engine {
-                        OcrEngine::Tesseract => OcrEngine::Ocrs,
-                        OcrEngine::Ocrs => OcrEngine::Tesseract,
-                    };
+                KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+                    self.ocr_engine = cycle_ocr_engine(self.ocr_engine, true);
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.ocr_engine = cycle_ocr_engine(self.ocr_engine, false);
                 }
                 _ => {}
             },
@@ -653,6 +689,19 @@ impl App {
             return;
         }
 
+        // Pre-flight check for the vision-LLM backend. If the user has
+        // selected it and OCR is on but the endpoint is unreachable, a
+        // rayon worker would discover this 120 s into the search when the
+        // first image times out. Bail right here instead.
+        #[cfg(feature = "vision-llm")]
+        if self.flags.ocr && self.ocr_engine == OcrEngine::VisionLlm {
+            if let Err(e) = crate::vision_llm_backend::ensure_ready(&self.vision_llm) {
+                self.set_toast(format!("vision-llm: {e}"), colors::ALERT);
+                self.focus = Focus::OcrEnginePicker;
+                return;
+            }
+        }
+
         let show_preview = self.flags.show_preview;
         let config = SearchConfig {
             directory: directory.canonicalize().unwrap_or(directory),
@@ -662,6 +711,7 @@ impl App {
             ocr: OcrConfig {
                 enabled: self.flags.ocr,
                 engine: self.ocr_engine,
+                vision_llm: self.vision_llm.clone(),
                 ..OcrConfig::default()
             },
             limit: self.limit,
@@ -956,12 +1006,13 @@ impl App {
         f.render_widget(block, area);
 
         let options = [
-            ("tesseract", OcrEngine::Tesseract, "fast C++"),
-            ("ocrs", OcrEngine::Ocrs, "ONNX · accurate"),
+            ("tesseract", OcrEngine::Tesseract),
+            ("ocrs", OcrEngine::Ocrs),
+            ("vision-llm", OcrEngine::VisionLlm),
         ];
         let enabled = self.flags.ocr;
         let mut spans: Vec<Span> = vec![Span::raw(" ")];
-        for (idx, (label, engine, _sub)) in options.iter().enumerate() {
+        for (idx, (label, engine)) in options.iter().enumerate() {
             let selected = *engine == self.ocr_engine;
             let marker = if selected { "●" } else { "○" };
             let marker_color = if !enabled {
@@ -989,11 +1040,31 @@ impl App {
                 label.to_string(),
                 Style::default().fg(label_color).add_modifier(label_mod),
             ));
-            if idx == 0 {
-                spans.push(Span::raw("   "));
+            if idx + 1 < options.len() {
+                spans.push(Span::raw("  "));
             }
         }
-        let p = Paragraph::new(Line::from(spans));
+
+        // Second line: read-only info about the vision-LLM target when that
+        // engine is selected. Keeps the picker compact while still making it
+        // visible which model/endpoint the search will hit.
+        let mut lines: Vec<Line> = vec![Line::from(spans)];
+        if self.ocr_engine == OcrEngine::VisionLlm && enabled {
+            let short_endpoint = shorten_endpoint(&self.vision_llm.endpoint);
+            let info = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    self.vision_llm.model.clone(),
+                    Style::default()
+                        .fg(colors::SKY)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ·  ", Style::default().fg(colors::DIM)),
+                Span::styled(short_endpoint, Style::default().fg(colors::MUTED)),
+            ]);
+            lines.push(info);
+        }
+        let p = Paragraph::new(lines);
         f.render_widget(p, inner);
     }
 
@@ -1793,6 +1864,7 @@ mod tests {
             use_regex: false,
             ocr_enabled: false,
             ocr_engine: OcrEngine::default(),
+            vision_llm: VisionLlmConfig::default(),
             limit: 20,
             max_depth: None,
             include_hidden: false,
@@ -2298,8 +2370,57 @@ mod tests {
         let before = app.ocr_engine;
         app.handle_key(key(KeyCode::Right));
         assert_ne!(app.ocr_engine, before);
+        // Left (backwards) should invert the single Right press.
         app.handle_key(key(KeyCode::Left));
         assert_eq!(app.ocr_engine, before);
+    }
+
+    #[test]
+    fn handle_key_right_cycles_through_all_three_engines() {
+        let mut app = make_app();
+        app.focus = Focus::OcrEnginePicker;
+        // Starting from any variant, three forward cycles must loop back.
+        let start = app.ocr_engine;
+        let mut seen = vec![start];
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Right));
+            seen.push(app.ocr_engine);
+        }
+        // After 3 forward steps we're back to the start.
+        assert_eq!(seen[3], start);
+        // And in between we visited all three distinct variants.
+        assert!(seen.contains(&OcrEngine::Tesseract));
+        assert!(seen.contains(&OcrEngine::Ocrs));
+        assert!(seen.contains(&OcrEngine::VisionLlm));
+    }
+
+    #[test]
+    fn cycle_ocr_engine_forward_and_backward_are_inverses() {
+        for engine in [OcrEngine::Tesseract, OcrEngine::Ocrs, OcrEngine::VisionLlm] {
+            assert_eq!(
+                cycle_ocr_engine(cycle_ocr_engine(engine, true), false),
+                engine,
+            );
+            assert_eq!(
+                cycle_ocr_engine(cycle_ocr_engine(engine, false), true),
+                engine,
+            );
+        }
+    }
+
+    #[test]
+    fn shorten_endpoint_strips_path_and_scheme_tolerates_bare_host() {
+        assert_eq!(
+            shorten_endpoint("http://localhost:11434/v1/chat/completions"),
+            "localhost:11434"
+        );
+        assert_eq!(
+            shorten_endpoint("https://api.openai.com/v1/chat/completions"),
+            "api.openai.com"
+        );
+        assert_eq!(shorten_endpoint("https://example.com"), "example.com");
+        // Not a URL: we pass it through rather than panicking.
+        assert_eq!(shorten_endpoint("not-a-url"), "not-a-url");
     }
 
     #[test]

@@ -229,15 +229,22 @@ impl PartialOrd for SearchResult {
 
 /// Which OCR backend to use for text extraction from images.
 ///
-/// `Tesseract` is the fast, native C++ engine via `leptess`.
-/// `Ocrs` is a pure-Rust ONNX-based engine with higher accuracy on modern
-/// documents, at the cost of a one-time model download (~25 MB).
+/// - `Tesseract` — fast native C++ engine via `leptess` (feature = "ocr").
+/// - `Ocrs` — pure-Rust ONNX engine, higher accuracy on modern printed docs
+///   (feature = "ocrs"). Downloads ~25 MB of models on first use.
+/// - `VisionLlm` — any OpenAI-compatible vision model over HTTP
+///   (feature = "vision-llm"). Defaults to Ollama + `glm-ocr` locally, but
+///   also speaks to OpenAI, Anthropic compat, Mistral, Groq, etc. Dramatic
+///   accuracy win on handwriting, newspapers, and rotated/skewed scans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OcrEngine {
     /// Traditional Tesseract engine (feature = "ocr").
     Tesseract,
     /// ONNX-based ocrs engine (feature = "ocrs").
     Ocrs,
+    /// Vision-LLM over HTTP — Ollama or any OpenAI-compatible endpoint
+    /// (feature = "vision-llm").
+    VisionLlm,
 }
 
 impl Default for OcrEngine {
@@ -245,9 +252,10 @@ impl Default for OcrEngine {
     // implement it manually and silence clippy's derivable-impls lint.
     #[allow(clippy::derivable_impls)]
     fn default() -> Self {
-        // Default to Tesseract when compiled in, else ocrs. If neither feature
-        // is enabled the field is still populated but OCR paths short-circuit
-        // with "backend not compiled" errors.
+        // Default preference order: Tesseract → Ocrs → VisionLlm. The first
+        // feature that's compiled in wins. If none are compiled, we still
+        // need a populated variant — pick Tesseract so the "backend not
+        // compiled" branch in extract_image_ocr can surface a helpful error.
         #[cfg(feature = "ocr")]
         {
             OcrEngine::Tesseract
@@ -256,7 +264,11 @@ impl Default for OcrEngine {
         {
             OcrEngine::Ocrs
         }
-        #[cfg(not(any(feature = "ocr", feature = "ocrs")))]
+        #[cfg(all(not(feature = "ocr"), not(feature = "ocrs"), feature = "vision-llm"))]
+        {
+            OcrEngine::VisionLlm
+        }
+        #[cfg(not(any(feature = "ocr", feature = "ocrs", feature = "vision-llm")))]
         {
             OcrEngine::Tesseract
         }
@@ -268,6 +280,46 @@ impl fmt::Display for OcrEngine {
         match self {
             OcrEngine::Tesseract => write!(f, "tesseract"),
             OcrEngine::Ocrs => write!(f, "ocrs"),
+            OcrEngine::VisionLlm => write!(f, "vision-llm"),
+        }
+    }
+}
+
+/// Per-request knobs for the `VisionLlm` OCR backend.
+///
+/// The defaults target a local Ollama instance running `glm-ocr` — the 0.9 B
+/// OCR-specialised model that ranks #1 on OmniDocBench V1.5. Every field is
+/// overridable from the CLI (`--ocr-endpoint`, `--ocr-model`, etc.) so the
+/// same backend code speaks to OpenAI, Anthropic-via-openai-compat, Mistral,
+/// Groq, or any other provider that exposes `/v1/chat/completions`.
+#[derive(Debug, Clone)]
+pub struct VisionLlmConfig {
+    /// Full URL to the OpenAI-compatible chat-completions endpoint.
+    pub endpoint: String,
+    /// Model name passed in the request body (e.g. `glm-ocr`,
+    /// `qwen2.5vl:7b`, `gpt-4o-mini`).
+    pub model: String,
+    /// Optional bearer token. Sourced from the `ARGUS_OCR_API_KEY`
+    /// environment variable at the CLI layer so it never enters argv.
+    pub api_key: Option<String>,
+    /// The OCR instruction text. Override for tables/math/code-specific runs.
+    pub prompt: String,
+    /// Per-request timeout. GLM-OCR is typically 1-3 s; larger VLMs can take
+    /// 30+ s on CPU, so the default ceiling is generous.
+    pub timeout_secs: u64,
+}
+
+impl Default for VisionLlmConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: "http://localhost:11434/v1/chat/completions".to_string(),
+            model: "glm-ocr".to_string(),
+            api_key: None,
+            prompt: "Extract all visible text from this image. Preserve line breaks \
+                     and reading order. Return only the text — no commentary, no \
+                     formatting, no explanations."
+                .to_string(),
+            timeout_secs: 120,
         }
     }
 }
@@ -297,6 +349,9 @@ pub struct OcrConfig {
     pub max_image_dimension: Option<u32>,
     /// Enable fast mode (uses eng_fast if available, PSM 6, OEM 1).
     pub fast_mode: bool,
+    /// Backend-specific knobs for the `VisionLlm` engine. Unused when
+    /// `engine` is Tesseract or Ocrs.
+    pub vision_llm: VisionLlmConfig,
 }
 
 impl Default for OcrConfig {
@@ -311,6 +366,7 @@ impl Default for OcrConfig {
             whitelist: None,
             max_image_dimension: None,
             fast_mode: false,
+            vision_llm: VisionLlmConfig::default(),
         }
     }
 }
@@ -329,6 +385,7 @@ impl OcrConfig {
             whitelist: None,
             max_image_dimension: Some(2000),
             fast_mode: true,
+            vision_llm: VisionLlmConfig::default(),
         }
     }
 }

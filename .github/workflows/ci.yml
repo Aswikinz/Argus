@@ -53,6 +53,8 @@ jobs:
         run: cargo clippy --locked --all-targets --features ocr -- -D warnings
       - name: Run clippy (ocrs feature)
         run: cargo clippy --locked --all-targets --features ocrs -- -D warnings
+      - name: Run clippy (vision-llm feature)
+        run: cargo clippy --locked --all-targets --features vision-llm -- -D warnings
 
   test:
     name: Test - ${{ matrix.os }} / ${{ matrix.rust }}
@@ -111,6 +113,22 @@ jobs:
       # exercise path resolution and error reporting.
       - name: Test with ocrs feature
         run: cargo test --locked --features ocrs --verbose
+
+  test-vision-llm:
+    name: Test - vision-llm feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Build with vision-llm feature
+        run: cargo build --locked --features vision-llm --verbose
+      # The backend tests only exercise request construction, response
+      # parsing, MIME sniffing, and cheap error paths — no live network.
+      - name: Test with vision-llm feature
+        run: cargo test --locked --features vision-llm --verbose
 
   docs:
     name: Docs

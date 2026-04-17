@@ -10,12 +10,13 @@ Named after Argus Panoptes, the all-seeing giant from Greek mythology, **Argus**
 ## Features
 
 - **Universal File Search**: Search through PDFs, Word documents (.docx), images (with OCR), text files, and code files
+- **Interactive TUI**: Run `argus` with no arguments to open a full-screen dashboard — compose a query with chips for file types, toggles for every option, a live progress bar, and a results pane with preview. Loop from result back to a fresh search without leaving the app.
 - **Fast Parallel Processing**: Leverages multi-core CPUs with Rayon for blazing-fast searches
 - **Index Caching**: Save extracted text to an index file for instant subsequent searches
 - **Beautiful CLI**: Colorful output with file type icons, confidence bars, and match highlighting
 - **Interactive Selection**: Navigate results with arrow keys and open files instantly
 - **Regex Support**: Full regex pattern matching when you need precise searches
-- **OCR Capability**: Extract and search text from images using Tesseract with optimized parallel processing (optional feature)
+- **OCR Capability**: Extract and search text from images using Tesseract (fast, native C++ via leptess) **or** `ocrs` (pure-Rust ONNX engine, higher accuracy on modern docs) — both selectable from the CLI and the TUI
 - **Cross-Platform**: Works on Linux and Windows
 
 ## Installation
@@ -30,8 +31,12 @@ cd argus
 # Build without OCR (faster build, smaller binary)
 cargo build --release
 
-# Build with OCR support (requires Tesseract installed)
+# Build with Tesseract OCR support (requires system Tesseract)
 cargo build --release --features ocr
+
+# Build with the pure-Rust ocrs ONNX backend (no Tesseract needed,
+# downloads ~25 MB of models on first use)
+cargo build --release --features ocrs
 
 # Install to your PATH
 cargo install --path .
@@ -47,6 +52,43 @@ cargo install --path .
   - macOS: `brew install tesseract`
 
 ## Usage
+
+### Interactive TUI (recommended for first-time users)
+
+Run `argus` with no arguments and you land in a full-screen dashboard:
+
+```bash
+argus
+```
+
+What you get:
+
+| Section        | What it does                                                                                                    |
+|----------------|-----------------------------------------------------------------------------------------------------------------|
+| **search for** | the text/regex you're looking for                                                                               |
+| **in folder**  | where to search (defaults to the directory you launched from, `~/` and `$HOME` are expanded)                    |
+| **file types** | a row of toggleable chips for 22 common extensions — pick as many as you want, leave all unticked to scan everything |
+| **options**    | case-sensitive, regex, OCR, include hidden, preview matches, **use saved index**, **save/update index**         |
+| **OCR engine** | switch between Tesseract and `ocrs` live (only meaningful when OCR is enabled)                                  |
+| **max depth**  | cycle through `unlimited / 1 / 2 / 3 / 5 / 10 / 20` levels                                                      |
+| **limit**      | slider for the top-N cap on displayed matches                                                                   |
+| **▶ run**      | runs the search                                                                                                 |
+
+Key bindings:
+
+- `Tab` / `Shift+Tab` — move between sections
+- `Space` — toggle the highlighted chip / option (or flip the OCR engine)
+- `←` / `→` — adjust sliders and pickers (extensions, OCR engine, max depth, limit)
+- `Enter` — run the search from any field
+- `Esc` — quit from Setup, go back from Results
+- `↑` / `↓` + `Enter` — navigate the results list and open a file
+- `n` — new search (keeps your filters, clears the query)
+- `b` — back to Setup with everything preserved so you can tweak and re-run
+- `Ctrl+C` — quit from anywhere
+
+The Searching phase shows a live `current / total files` progress bar, so you can see exactly how the scan is going.
+
+### Command-line usage
 
 ```bash
 # Basic search in current directory
@@ -64,8 +106,11 @@ argus -r "\bfn\s+\w+"
 # Search only specific file types
 argus -e pdf,docx,txt "report"
 
-# Enable OCR for images (requires --features ocr)
+# Enable OCR for images (requires --features ocr or --features ocrs)
 argus -o "text in screenshot"
+
+# Use the ocrs ONNX engine instead of Tesseract
+argus -o --ocr-engine ocrs "text in screenshot"
 
 # Show content preview
 argus -p "error"
@@ -99,20 +144,23 @@ argus -i --index-file ~/my_index.json "pattern"
 
 | Flag | Long | Description | Default |
 |------|------|-------------|---------|
-| `<PATTERN>` | | Search pattern (required) | - |
+| `[PATTERN]` | | Search pattern — **omit to launch the interactive TUI** | - |
 | `-d` | `--directory` | Directory to search | Current dir |
 | `-l` | `--limit` | Maximum results | 20 |
 | `-s` | `--case-sensitive` | Case-sensitive search | Off |
 | `-o` | `--ocr` | Enable OCR for images | Off |
+| | `--ocr-engine` | Which OCR backend (`tesseract` \| `ocrs`) | Depends on enabled feature |
 | `-r` | `--regex` | Use regex matching | Off |
 | `-p` | `--preview` | Show match previews | Off |
-| `-e` | `--extensions` | Filter by extensions | All |
+| `-e` | `--extensions` | Filter by extensions (comma-separated) | All |
 | | `--max-depth` | Max directory depth | Unlimited |
 | `-H` | `--hidden` | Include hidden files | Off |
 | `-n` | `--non-interactive` | Non-interactive mode | Off |
 | `-i` | `--save-index` | Save index after scanning | Off |
 | `-I` | `--use-index` | Use existing index | Off |
 | | `--index-file` | Custom index file path | `.argus_index.json` |
+
+Every option above is also surfaced in the TUI (with the exception of `--index-file`, which is an advanced override kept on the CLI only; the TUI uses whatever path is in effect when you launched argus, defaulting to `.argus_index.json`).
 
 ## Output Example
 
@@ -164,12 +212,14 @@ build.bat
 
 ```
 src/
-├── main.rs        # CLI entry point and argument parsing
-├── types.rs       # Core data structures (SearchResult, Match, FileType)
-├── search.rs      # Search engine with parallel file processing
-├── extractors.rs  # Text extraction for each file format
-├── index.rs       # Index caching for extracted text
-└── ui.rs          # Beautiful terminal output and interactive selection
+├── main.rs            # CLI entry point; routes to the TUI or the classic CLI flow
+├── types.rs           # Core data structures (SearchResult, Match, FileType, configs)
+├── search.rs          # Parallel search engine with a shared progress handle
+├── extractors.rs      # Text extraction for each file format
+├── index.rs           # Index caching for extracted text
+├── ocrs_backend.rs    # Pure-Rust ocrs ONNX OCR backend (feature = "ocrs")
+├── ui.rs              # Classic terminal output and interactive file selector
+└── tui.rs             # Full-screen ratatui dashboard (Setup → Searching → Results)
 ```
 
 ## Indexing
@@ -245,4 +295,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - Named after [Argus Panoptes](https://en.wikipedia.org/wiki/Argus_Panoptes), the hundred-eyed giant from Greek mythology
-- Built with amazing Rust crates: clap, rayon, walkdir, colored, dialoguer, indicatif, and more
+- Built with amazing Rust crates: clap, rayon, walkdir, colored, dialoguer, indicatif, ratatui, crossterm, and more

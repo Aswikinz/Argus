@@ -107,6 +107,8 @@ enum Focus {
     Directory,
     Extensions,
     Flags,
+    OcrEnginePicker,
+    MaxDepth,
     Limit,
     RunButton,
 }
@@ -117,7 +119,9 @@ impl Focus {
             Focus::Pattern => Focus::Directory,
             Focus::Directory => Focus::Extensions,
             Focus::Extensions => Focus::Flags,
-            Focus::Flags => Focus::Limit,
+            Focus::Flags => Focus::OcrEnginePicker,
+            Focus::OcrEnginePicker => Focus::MaxDepth,
+            Focus::MaxDepth => Focus::Limit,
             Focus::Limit => Focus::RunButton,
             Focus::RunButton => Focus::Pattern,
         }
@@ -129,9 +133,37 @@ impl Focus {
             Focus::Directory => Focus::Pattern,
             Focus::Extensions => Focus::Directory,
             Focus::Flags => Focus::Extensions,
-            Focus::Limit => Focus::Flags,
+            Focus::OcrEnginePicker => Focus::Flags,
+            Focus::MaxDepth => Focus::OcrEnginePicker,
+            Focus::Limit => Focus::MaxDepth,
             Focus::RunButton => Focus::Limit,
         }
+    }
+}
+
+/// Discrete max-depth options cycled through with ←/→ on the MaxDepth picker.
+/// `None` means "no limit" — let walkdir descend forever.
+const MAX_DEPTH_OPTIONS: &[Option<usize>] = &[
+    None,
+    Some(1),
+    Some(2),
+    Some(3),
+    Some(5),
+    Some(10),
+    Some(20),
+];
+
+fn max_depth_index(current: Option<usize>) -> usize {
+    MAX_DEPTH_OPTIONS
+        .iter()
+        .position(|opt| *opt == current)
+        .unwrap_or(0)
+}
+
+fn max_depth_label(d: Option<usize>) -> String {
+    match d {
+        None => "unlimited".to_string(),
+        Some(n) => format!("{n} levels"),
     }
 }
 
@@ -189,18 +221,20 @@ impl ChipList {
 }
 
 /// Ordered set of togglable search flags. Cursor indexes into the slice
-/// returned by `flags_list`.
+/// returned by [`Flags::entries`].
 struct Flags {
     case_sensitive: bool,
     use_regex: bool,
     ocr: bool,
     include_hidden: bool,
     show_preview: bool,
+    use_index: bool,
+    save_index: bool,
     cursor: usize,
 }
 
 impl Flags {
-    const LEN: usize = 5;
+    const LEN: usize = 7;
 
     fn entries(&self) -> [(&'static str, bool, &'static str); Self::LEN] {
         [
@@ -225,6 +259,16 @@ impl Flags {
                 self.show_preview,
                 "show a line of context for each hit",
             ),
+            (
+                "use saved index",
+                self.use_index,
+                "skip re-reading unchanged files (much faster)",
+            ),
+            (
+                "save / update index",
+                self.save_index,
+                "write an index file for future speed-ups",
+            ),
         ]
     }
 
@@ -235,6 +279,8 @@ impl Flags {
             2 => self.ocr = !self.ocr,
             3 => self.include_hidden = !self.include_hidden,
             4 => self.show_preview = !self.show_preview,
+            5 => self.use_index = !self.use_index,
+            6 => self.save_index = !self.save_index,
             _ => {}
         }
     }
@@ -252,7 +298,6 @@ enum SearchMessage {
         results: Vec<SearchResult>,
         stats: SearchStats,
     },
-    Error(String),
 }
 
 enum Phase {
@@ -262,6 +307,7 @@ enum Phase {
         started: Instant,
         tick: usize,
         show_preview: bool,
+        progress: std::sync::Arc<crate::search::ProgressHandle>,
     },
     Results {
         results: Vec<SearchResult>,
@@ -305,6 +351,8 @@ impl App {
                 ocr: prefill.ocr_enabled,
                 include_hidden: prefill.include_hidden,
                 show_preview: prefill.show_preview,
+                use_index: index_config.use_index,
+                save_index: index_config.save_index,
                 cursor: 0,
             },
             limit,
@@ -424,6 +472,32 @@ impl App {
                 KeyCode::Up | KeyCode::Char('k') => self.flags.move_cursor(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.flags.move_cursor(1),
                 KeyCode::Char(' ') => self.flags.toggle_current(),
+                _ => {}
+            },
+            Focus::OcrEnginePicker => match key.code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Char(' ')
+                | KeyCode::Char('h')
+                | KeyCode::Char('l') => {
+                    self.ocr_engine = match self.ocr_engine {
+                        OcrEngine::Tesseract => OcrEngine::Ocrs,
+                        OcrEngine::Ocrs => OcrEngine::Tesseract,
+                    };
+                }
+                _ => {}
+            },
+            Focus::MaxDepth => match key.code {
+                KeyCode::Right | KeyCode::Up | KeyCode::Char('l') | KeyCode::Char('k') => {
+                    let idx = max_depth_index(self.max_depth);
+                    let next = (idx + 1) % MAX_DEPTH_OPTIONS.len();
+                    self.max_depth = MAX_DEPTH_OPTIONS[next];
+                }
+                KeyCode::Left | KeyCode::Down | KeyCode::Char('h') | KeyCode::Char('j') => {
+                    let idx = max_depth_index(self.max_depth);
+                    let next = (idx + MAX_DEPTH_OPTIONS.len() - 1) % MAX_DEPTH_OPTIONS.len();
+                    self.max_depth = MAX_DEPTH_OPTIONS[next];
+                }
                 _ => {}
             },
             Focus::Limit => match key.code {
@@ -600,17 +674,32 @@ impl App {
             show_preview,
         };
 
-        let index_config = self.index_config.clone();
+        // Let the Flags panel drive the index toggles — the CLI-provided
+        // index_file path is still honoured, but the user can override the
+        // save/use decisions visually.
+        let index_config = IndexConfig {
+            save_index: self.flags.save_index,
+            use_index: self.flags.use_index,
+            index_file: self.index_config.index_file.clone(),
+        };
+
+        // Build the engine on this thread so we can grab its shared progress
+        // handle, then hand ownership to the worker thread for the scan.
+        let mut engine = match SearchEngine::new(config, index_config) {
+            Ok(e) => e,
+            Err(e) => {
+                self.set_toast(format!("invalid regex: {e}"), colors::ALERT);
+                self.focus = Focus::Pattern;
+                return;
+            }
+        };
+        engine.set_quiet(true);
+        let progress = engine.progress_handle();
+
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let message = match SearchEngine::new(config, index_config) {
-                Ok(mut engine) => {
-                    let (results, stats) = engine.search();
-                    SearchMessage::Done { results, stats }
-                }
-                Err(e) => SearchMessage::Error(format!("invalid regex: {e}")),
-            };
-            let _ = tx.send(message);
+            let (results, stats) = engine.search();
+            let _ = tx.send(SearchMessage::Done { results, stats });
         });
 
         self.phase = Phase::Searching {
@@ -618,6 +707,7 @@ impl App {
             started: Instant::now(),
             tick: 0,
             show_preview,
+            progress,
         };
     }
 
@@ -648,11 +738,6 @@ impl App {
                     show_preview,
                     list_state,
                 };
-            }
-            Ok(SearchMessage::Error(msg)) => {
-                self.phase = Phase::Setup;
-                self.focus = Focus::Pattern;
-                self.set_toast(msg, colors::ALERT);
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -773,7 +858,12 @@ impl App {
                     ("tab", "next field"),
                     ("⏎", "run"),
                 ]),
-                Focus::Limit => help_spans(&[
+                Focus::OcrEnginePicker => help_spans(&[
+                    ("← →", "switch engine"),
+                    ("tab", "next field"),
+                    ("⏎", "run"),
+                ]),
+                Focus::MaxDepth | Focus::Limit => help_spans(&[
                     ("← →", "adjust"),
                     ("tab", "next field"),
                     ("⏎", "run"),
@@ -829,8 +919,8 @@ impl App {
             .constraints([
                 Constraint::Length(3), // pattern
                 Constraint::Length(3), // directory
-                Constraint::Min(8),    // extensions + flags side by side
-                Constraint::Length(3), // limit
+                Constraint::Min(9),    // extensions + flags (flags now has 7 items)
+                Constraint::Length(3), // OCR engine + max depth + limit (3 cols)
                 Constraint::Length(3), // run button
             ])
             .split(content);
@@ -840,14 +930,109 @@ impl App {
 
         let middle = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(rows[2]);
 
         self.draw_extensions_box(f, middle[0]);
         self.draw_flags_box(f, middle[1]);
 
-        self.draw_limit_box(f, rows[3]);
+        let small_row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(33),
+                Constraint::Percentage(33),
+                Constraint::Percentage(34),
+            ])
+            .split(rows[3]);
+
+        self.draw_ocr_engine_box(f, small_row[0]);
+        self.draw_max_depth_box(f, small_row[1]);
+        self.draw_limit_box(f, small_row[2]);
+
         self.draw_run_button(f, rows[4]);
+    }
+
+    fn draw_ocr_engine_box(&self, f: &mut Frame<'_>, area: Rect) {
+        let hint = if self.flags.ocr {
+            "← → to pick"
+        } else {
+            "enable OCR to use"
+        };
+        let block = self.box_with_title(Focus::OcrEnginePicker, "OCR engine", hint);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let options = [
+            ("tesseract", OcrEngine::Tesseract, "fast C++"),
+            ("ocrs", OcrEngine::Ocrs, "ONNX · accurate"),
+        ];
+        let enabled = self.flags.ocr;
+        let mut spans: Vec<Span> = vec![Span::raw(" ")];
+        for (idx, (label, engine, _sub)) in options.iter().enumerate() {
+            let selected = *engine == self.ocr_engine;
+            let marker = if selected { "●" } else { "○" };
+            let marker_color = if !enabled {
+                colors::DIM
+            } else if selected {
+                colors::ROSE
+            } else {
+                colors::MUTED
+            };
+            let label_color = if !enabled {
+                colors::DIM
+            } else if selected {
+                colors::TEXT
+            } else {
+                colors::MUTED
+            };
+            let label_mod = if selected && enabled {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            };
+            spans.push(Span::styled(marker, Style::default().fg(marker_color)));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                label.to_string(),
+                Style::default().fg(label_color).add_modifier(label_mod),
+            ));
+            if idx == 0 {
+                spans.push(Span::raw("   "));
+            }
+        }
+        let p = Paragraph::new(Line::from(spans));
+        f.render_widget(p, inner);
+    }
+
+    fn draw_max_depth_box(&self, f: &mut Frame<'_>, area: Rect) {
+        let block = self.box_with_title(Focus::MaxDepth, "max depth", "how deep to descend");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let idx = max_depth_index(self.max_depth);
+        let (arrow_left, arrow_right) = if self.focus == Focus::MaxDepth {
+            ("◂ ", " ▸")
+        } else {
+            ("  ", "  ")
+        };
+        let pos_label = format!("{}/{}", idx + 1, MAX_DEPTH_OPTIONS.len());
+
+        let line = Line::from(vec![
+            Span::styled(arrow_left, Style::default().fg(colors::ROSE)),
+            Span::styled(
+                max_depth_label(self.max_depth),
+                Style::default()
+                    .fg(colors::TEXT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(arrow_right, Style::default().fg(colors::ROSE)),
+            Span::styled(
+                format!("   {pos_label}"),
+                Style::default().fg(colors::DIM),
+            ),
+        ]);
+        let p = Paragraph::new(line);
+        f.render_widget(p, inner);
     }
 
     fn focus_style(&self, focus: Focus) -> (Style, BorderType, Color) {
@@ -1043,11 +1228,17 @@ impl App {
     // ---- Searching screen -------------------------------------------------
 
     fn draw_searching(&self, f: &mut Frame<'_>, area: Rect) {
-        let Phase::Searching { started, tick, .. } = &self.phase else {
+        let Phase::Searching {
+            started,
+            tick,
+            progress,
+            ..
+        } = &self.phase
+        else {
             return;
         };
 
-        let outer = centered_rect(70, 40, area);
+        let outer = centered_rect(70, 50, area);
 
         let elapsed = started.elapsed();
         let elapsed_str = format_duration(elapsed);
@@ -1055,16 +1246,46 @@ impl App {
         let spinner_frames = ["◐", "◓", "◑", "◒"];
         let spinner = spinner_frames[(*tick) % spinner_frames.len()];
 
+        // Snapshot the shared counters once per draw so the bar and caption
+        // agree with each other.
+        let current = progress
+            .current
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let total = progress.total.load(std::sync::atomic::Ordering::Relaxed);
+
         let bar_width = outer.width.saturating_sub(6) as usize;
-        let pos = tick % bar_width.max(1);
-        let mut bar_chars: Vec<char> = vec!['─'; bar_width];
-        for i in 0..6 {
-            let idx = (pos + i) % bar_width.max(1);
-            if idx < bar_chars.len() {
-                bar_chars[idx] = '━';
+
+        // Two modes:
+        //   - Discovery: we haven't finished `collect_files` yet (total==0).
+        //     Show an animated cursor so the user knows we're alive.
+        //   - Scanning: we know the total, render a real ratio bar.
+        let (bar, caption, caption_color) = if total == 0 {
+            let pos = tick % bar_width.max(1);
+            let mut bar_chars: Vec<char> = vec!['─'; bar_width];
+            for i in 0..6 {
+                let idx = (pos + i) % bar_width.max(1);
+                if idx < bar_chars.len() {
+                    bar_chars[idx] = '━';
+                }
             }
-        }
-        let bar: String = bar_chars.iter().collect();
+            (
+                bar_chars.iter().collect::<String>(),
+                "discovering files…".to_string(),
+                colors::DIM,
+            )
+        } else {
+            let filled =
+                ((current as f64 / total.max(1) as f64) * bar_width as f64).round() as usize;
+            let filled = filled.min(bar_width);
+            let on: String = "━".repeat(filled);
+            let off: String = "─".repeat(bar_width.saturating_sub(filled));
+            let pct = ((current as f64 / total.max(1) as f64) * 100.0).round() as u32;
+            (
+                format!("{on}{off}"),
+                format!("{current} / {total} files  ·  {pct}%"),
+                colors::ACCENT,
+            )
+        };
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -1103,6 +1324,10 @@ impl App {
                 Style::default().fg(colors::ACCENT),
             )),
             Line::from(""),
+            Line::from(vec![Span::styled(
+                format!("      {caption}"),
+                Style::default().fg(caption_color),
+            )]),
             Line::from(vec![Span::styled(
                 format!("      elapsed  {elapsed_str}"),
                 Style::default().fg(colors::DIM),

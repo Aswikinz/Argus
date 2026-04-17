@@ -30,13 +30,13 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use ratatui::{Frame, Terminal};
 
 use crate::search::SearchEngine;
-use crate::types::{
-    IndexConfig, OcrConfig, OcrEngine, SearchConfig, SearchResult, SearchStats,
-};
+use crate::types::{IndexConfig, OcrConfig, OcrEngine, SearchConfig, SearchResult, SearchStats};
 
 /// Values passed in from the command line that pre-populate the Setup form.
 ///
@@ -72,8 +72,8 @@ mod colors {
 /// Common file extensions surfaced as toggleable chips on the Setup screen.
 /// Ordered by perceived usefulness for a first-time user.
 const EXTENSION_CATALOG: &[&str] = &[
-    "txt", "md", "pdf", "docx", "rs", "py", "js", "ts", "json", "yaml", "toml",
-    "html", "css", "go", "java", "c", "cpp", "sh", "log", "csv", "png", "jpg",
+    "txt", "md", "pdf", "docx", "rs", "py", "js", "ts", "json", "yaml", "toml", "html", "css",
+    "go", "java", "c", "cpp", "sh", "log", "csv", "png", "jpg",
 ];
 
 /// Entry point: take over the terminal, run the app loop, restore the terminal.
@@ -101,7 +101,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow
 
 // ----- State ---------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
     Pattern,
     Directory,
@@ -143,15 +143,8 @@ impl Focus {
 
 /// Discrete max-depth options cycled through with ←/→ on the MaxDepth picker.
 /// `None` means "no limit" — let walkdir descend forever.
-const MAX_DEPTH_OPTIONS: &[Option<usize>] = &[
-    None,
-    Some(1),
-    Some(2),
-    Some(3),
-    Some(5),
-    Some(10),
-    Some(20),
-];
+const MAX_DEPTH_OPTIONS: &[Option<usize>] =
+    &[None, Some(1), Some(2), Some(3), Some(5), Some(10), Some(20)];
 
 fn max_depth_index(current: Option<usize>) -> usize {
     MAX_DEPTH_OPTIONS
@@ -339,7 +332,11 @@ struct App {
 
 impl App {
     fn new(prefill: Prefill, index_config: IndexConfig) -> Self {
-        let limit = if prefill.limit == 0 { 20 } else { prefill.limit };
+        let limit = if prefill.limit == 0 {
+            20
+        } else {
+            prefill.limit
+        };
         Self {
             phase: Phase::Setup,
             pattern: String::new(),
@@ -863,16 +860,12 @@ impl App {
                     ("tab", "next field"),
                     ("⏎", "run"),
                 ]),
-                Focus::MaxDepth | Focus::Limit => help_spans(&[
-                    ("← →", "adjust"),
-                    ("tab", "next field"),
-                    ("⏎", "run"),
-                ]),
-                Focus::RunButton => help_spans(&[
-                    ("⏎", "run search"),
-                    ("shift-tab", "back"),
-                    ("esc", "quit"),
-                ]),
+                Focus::MaxDepth | Focus::Limit => {
+                    help_spans(&[("← →", "adjust"), ("tab", "next field"), ("⏎", "run")])
+                }
+                Focus::RunButton => {
+                    help_spans(&[("⏎", "run search"), ("shift-tab", "back"), ("esc", "quit")])
+                }
             },
             Phase::Searching { .. } => help_spans(&[("ctrl-c", "abort")]),
             Phase::Results { .. } => help_spans(&[
@@ -1026,10 +1019,7 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(arrow_right, Style::default().fg(colors::ROSE)),
-            Span::styled(
-                format!("   {pos_label}"),
-                Style::default().fg(colors::DIM),
-            ),
+            Span::styled(format!("   {pos_label}"), Style::default().fg(colors::DIM)),
         ]);
         let p = Paragraph::new(line);
         f.render_widget(p, inner);
@@ -1074,7 +1064,11 @@ impl App {
 
     fn draw_pattern_box(&self, f: &mut Frame<'_>, area: Rect) {
         let block = self.box_with_title(Focus::Pattern, "search for", "what do you want to find?");
-        let caret = if self.focus == Focus::Pattern { "▍" } else { "" };
+        let caret = if self.focus == Focus::Pattern {
+            "▍"
+        } else {
+            ""
+        };
         let content = if self.pattern.is_empty() && self.focus != Focus::Pattern {
             Line::from(Span::styled(
                 "start typing your query…",
@@ -1187,7 +1181,10 @@ impl App {
         };
 
         let line = Line::from(vec![
-            Span::styled(format!("{:>3}  ", self.limit), Style::default().fg(colors::TEXT)),
+            Span::styled(
+                format!("{:>3}  ", self.limit),
+                Style::default().fg(colors::TEXT),
+            ),
             Span::styled(bar_on, Style::default().fg(accent)),
             Span::styled(bar_off, Style::default().fg(colors::DIM)),
         ]);
@@ -1219,8 +1216,8 @@ impl App {
 
         let label_style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
 
-        let line = Line::from(Span::styled("  ▶  run search  ", label_style))
-            .alignment(Alignment::Center);
+        let line =
+            Line::from(Span::styled("  ▶  run search  ", label_style)).alignment(Alignment::Center);
         let p = Paragraph::new(line);
         f.render_widget(p, inner);
     }
@@ -1248,9 +1245,7 @@ impl App {
 
         // Snapshot the shared counters once per draw so the bar and caption
         // agree with each other.
-        let current = progress
-            .current
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let current = progress.current.load(std::sync::atomic::Ordering::Relaxed);
         let total = progress.total.load(std::sync::atomic::Ordering::Relaxed);
 
         let bar_width = outer.width.saturating_sub(6) as usize;
@@ -1303,10 +1298,7 @@ impl App {
         let lines = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled(
-                    format!("  {spinner}  "),
-                    Style::default().fg(colors::ROSE),
-                ),
+                Span::styled(format!("  {spinner}  "), Style::default().fg(colors::ROSE)),
                 Span::styled(
                     format!("searching for “{}”", self.pattern),
                     Style::default()
@@ -1436,10 +1428,7 @@ impl App {
                             .fg(colors::TEXT)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("  · {matches}"),
-                        Style::default().fg(colors::MUTED),
-                    ),
+                    Span::styled(format!("  · {matches}"), Style::default().fg(colors::MUTED)),
                 ]);
                 ListItem::new(spans)
             })
@@ -1509,7 +1498,11 @@ fn build_chip_lines(
 
     for (idx, (name, on)) in chips.iter().enumerate() {
         let is_cursor = focused && idx == cursor;
-        let (lbracket, rbracket) = if is_cursor { ("❮", "❯") } else { (" ", " ") };
+        let (lbracket, rbracket) = if is_cursor {
+            ("❮", "❯")
+        } else {
+            (" ", " ")
+        };
 
         let chip_text = format!("{lbracket}{name}{rbracket}");
         let width = chip_text.chars().count() + 1;
@@ -1785,5 +1778,743 @@ fn toast_rect(area: Rect, text_len: usize) -> Rect {
         y,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    fn make_prefill() -> Prefill {
+        Prefill {
+            directory: PathBuf::from("."),
+            case_sensitive: false,
+            use_regex: false,
+            ocr_enabled: false,
+            ocr_engine: OcrEngine::default(),
+            limit: 20,
+            max_depth: None,
+            include_hidden: false,
+            extensions: Vec::new(),
+            show_preview: false,
+        }
+    }
+
+    fn make_app() -> App {
+        App::new(make_prefill(), IndexConfig::default())
+    }
+
+    // ---- Focus ring ------------------------------------------------------
+
+    #[test]
+    fn focus_next_covers_every_variant_in_order() {
+        let order = [
+            Focus::Pattern,
+            Focus::Directory,
+            Focus::Extensions,
+            Focus::Flags,
+            Focus::OcrEnginePicker,
+            Focus::MaxDepth,
+            Focus::Limit,
+            Focus::RunButton,
+        ];
+        let mut f = order[0];
+        for expected in order.iter().skip(1).chain(order.iter().take(1)) {
+            f = f.next();
+            assert_eq!(f, *expected);
+        }
+    }
+
+    #[test]
+    fn focus_prev_is_inverse_of_next() {
+        let all = [
+            Focus::Pattern,
+            Focus::Directory,
+            Focus::Extensions,
+            Focus::Flags,
+            Focus::OcrEnginePicker,
+            Focus::MaxDepth,
+            Focus::Limit,
+            Focus::RunButton,
+        ];
+        for f in all {
+            assert_eq!(f.next().prev(), f);
+            assert_eq!(f.prev().next(), f);
+        }
+    }
+
+    // ---- ChipList --------------------------------------------------------
+
+    #[test]
+    fn chiplist_preseeds_user_supplied_extensions_as_on() {
+        let list = ChipList::new(&["pdf".into(), "RS".into()]);
+        assert!(list.chips.iter().any(|(n, on)| n == "pdf" && *on));
+        assert!(list.chips.iter().any(|(n, on)| n == "rs" && *on));
+        // Catalog entries not in the list remain off.
+        assert!(list.chips.iter().any(|(n, on)| n == "txt" && !*on));
+    }
+
+    #[test]
+    fn chiplist_adds_unknown_user_extension() {
+        let list = ChipList::new(&["exotic".into()]);
+        assert!(list.chips.iter().any(|(n, on)| n == "exotic" && *on));
+    }
+
+    #[test]
+    fn chiplist_toggle_current_flips_single_chip() {
+        let mut list = ChipList::new(&[]);
+        let before = list.chips[0].1;
+        list.toggle_current();
+        assert_eq!(list.chips[0].1, !before);
+    }
+
+    #[test]
+    fn chiplist_move_cursor_wraps() {
+        let mut list = ChipList::new(&[]);
+        list.cursor = 0;
+        list.move_cursor(-1);
+        assert_eq!(list.cursor, list.chips.len() - 1);
+        list.move_cursor(1);
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn chiplist_move_cursor_is_a_noop_on_empty() {
+        let mut list = ChipList {
+            chips: Vec::new(),
+            cursor: 0,
+        };
+        list.move_cursor(5);
+        assert_eq!(list.cursor, 0);
+    }
+
+    #[test]
+    fn chiplist_selected_returns_only_enabled_chips() {
+        let list = ChipList::new(&["pdf".into(), "md".into()]);
+        let selected = list.selected();
+        assert!(selected.contains(&"pdf".to_string()));
+        assert!(selected.contains(&"md".to_string()));
+        assert!(!selected.contains(&"rs".to_string()));
+    }
+
+    // ---- Flags -----------------------------------------------------------
+
+    fn blank_flags() -> Flags {
+        Flags {
+            case_sensitive: false,
+            use_regex: false,
+            ocr: false,
+            include_hidden: false,
+            show_preview: false,
+            use_index: false,
+            save_index: false,
+            cursor: 0,
+        }
+    }
+
+    #[test]
+    fn flags_entries_len_matches_const() {
+        let flags = blank_flags();
+        assert_eq!(flags.entries().len(), Flags::LEN);
+    }
+
+    #[test]
+    fn flags_toggle_current_flips_each_slot() {
+        let mut flags = blank_flags();
+        for i in 0..Flags::LEN {
+            flags.cursor = i;
+            flags.toggle_current();
+        }
+        // After one pass every flag should be true.
+        assert!(flags.case_sensitive);
+        assert!(flags.use_regex);
+        assert!(flags.ocr);
+        assert!(flags.include_hidden);
+        assert!(flags.show_preview);
+        assert!(flags.use_index);
+        assert!(flags.save_index);
+    }
+
+    #[test]
+    fn flags_move_cursor_wraps_both_ways() {
+        let mut flags = blank_flags();
+        flags.move_cursor(-1);
+        assert_eq!(flags.cursor, Flags::LEN - 1);
+        flags.move_cursor(1);
+        assert_eq!(flags.cursor, 0);
+    }
+
+    // ---- Max-depth cycle -------------------------------------------------
+
+    #[test]
+    fn max_depth_index_defaults_to_zero_when_not_in_catalog() {
+        assert_eq!(max_depth_index(Some(999)), 0);
+        assert_eq!(max_depth_index(None), 0);
+        assert_eq!(max_depth_index(Some(3)), 3);
+    }
+
+    #[test]
+    fn max_depth_label_shapes() {
+        assert_eq!(max_depth_label(None), "unlimited");
+        assert_eq!(max_depth_label(Some(5)), "5 levels");
+    }
+
+    // ---- Pure helpers ----------------------------------------------------
+
+    #[test]
+    fn format_duration_sub_second_ms() {
+        assert_eq!(format_duration(Duration::from_millis(42)), "42ms");
+    }
+
+    #[test]
+    fn format_duration_over_one_second() {
+        assert_eq!(format_duration(Duration::from_millis(1500)), "1.5s");
+    }
+
+    #[test]
+    fn truncate_display_leaves_short_strings_alone() {
+        assert_eq!(truncate_display("hi", 10), "hi");
+    }
+
+    #[test]
+    fn truncate_display_adds_ellipsis_when_too_long() {
+        let out = truncate_display("abcdefghij", 5);
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), 6);
+    }
+
+    #[test]
+    fn shellexpand_expands_tilde_slash_and_bare_tilde() {
+        // Only assert on platforms where HOME is set (Unix CI, and locally).
+        if let Some(home) = std::env::var_os("HOME") {
+            let home_str = home.to_string_lossy().to_string();
+            assert_eq!(shellexpand("~"), home_str);
+            assert!(shellexpand("~/foo").starts_with(&home_str));
+        }
+        // Paths that don't start with ~ are returned untouched.
+        assert_eq!(shellexpand("/abs/path"), "/abs/path");
+        assert_eq!(shellexpand("relative/path"), "relative/path");
+    }
+
+    #[test]
+    fn display_filename_extracts_trailing_component() {
+        assert_eq!(display_filename(&PathBuf::from("/a/b/c.txt")), "c.txt");
+        assert_eq!(display_filename(&PathBuf::from("solo.md")), "solo.md");
+    }
+
+    #[test]
+    fn highlight_inline_marks_the_match() {
+        let line = highlight_inline("hello needle world", "needle");
+        // The line should contain three spans: "  " + before + match + after.
+        // The match span must carry the rose background (i.e. the highlight).
+        let has_highlight = line
+            .spans
+            .iter()
+            .any(|s| s.style.bg == Some(colors::ROSE) && s.content.contains("needle"));
+        assert!(has_highlight);
+    }
+
+    #[test]
+    fn highlight_inline_handles_empty_pattern() {
+        let line = highlight_inline("hello world", "");
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn highlight_inline_unicode_case_insensitive() {
+        let line = highlight_inline("Café du Monde", "café");
+        let has_match = line.spans.iter().any(|s| s.content.contains("Café"));
+        assert!(has_match);
+    }
+
+    #[test]
+    fn build_chip_lines_highlights_focused_cursor() {
+        let chips = vec![("pdf".into(), true), ("md".into(), false)];
+        let lines = build_chip_lines(&chips, 0, true, 80);
+        // Focused cursor renders angle brackets around the active chip.
+        let has_cursor = lines.iter().any(|line| {
+            line.spans
+                .iter()
+                .any(|s| s.content.as_ref() == "❮" || s.content.as_ref() == "❯")
+        });
+        assert!(has_cursor);
+    }
+
+    #[test]
+    fn build_chip_lines_wraps_when_narrow() {
+        let chips: Vec<(String, bool)> = (0..10).map(|i| (format!("ext{i}"), false)).collect();
+        let lines = build_chip_lines(&chips, 0, false, 15);
+        assert!(lines.len() >= 2, "expected wrapping, got {lines:?}");
+    }
+
+    // ---- Rect helpers ----------------------------------------------------
+
+    #[test]
+    fn centered_rect_is_contained() {
+        let outer = Rect::new(0, 0, 100, 50);
+        let inner = centered_rect(50, 40, outer);
+        assert!(inner.x >= outer.x);
+        assert!(inner.y >= outer.y);
+        assert!(inner.x + inner.width <= outer.x + outer.width);
+        assert!(inner.y + inner.height <= outer.y + outer.height);
+    }
+
+    #[test]
+    fn toast_rect_stays_inside_area() {
+        let area = Rect::new(0, 0, 80, 24);
+        let r = toast_rect(area, 20);
+        assert!(r.x + r.width <= area.x + area.width);
+        assert!(r.y + r.height <= area.y + area.height);
+    }
+
+    // ---- End-to-end smoke tests via TestBackend --------------------------
+
+    /// Each phase draws to an offscreen buffer without touching a real TTY.
+    /// We don't assert on exact glyphs — the goal is just to exercise the
+    /// rendering paths so coverage sees them and to catch any panic in
+    /// layout or style code.
+    fn draw_phase(app: &mut App, phase: Phase, size: (u16, u16)) {
+        app.phase = phase;
+        let backend = TestBackend::new(size.0, size.1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+    }
+
+    #[test]
+    fn draw_setup_does_not_panic_on_standard_size() {
+        let mut app = make_app();
+        app.pattern = "hello".to_string();
+        draw_phase(&mut app, Phase::Setup, (100, 40));
+    }
+
+    #[test]
+    fn draw_setup_on_tiny_terminal_does_not_panic() {
+        // ratatui should gracefully clip rather than panic. This exercises
+        // the constraint fallbacks.
+        let mut app = make_app();
+        draw_phase(&mut app, Phase::Setup, (40, 20));
+    }
+
+    #[test]
+    fn draw_setup_with_each_focus_variant() {
+        for focus in [
+            Focus::Pattern,
+            Focus::Directory,
+            Focus::Extensions,
+            Focus::Flags,
+            Focus::OcrEnginePicker,
+            Focus::MaxDepth,
+            Focus::Limit,
+            Focus::RunButton,
+        ] {
+            let mut app = make_app();
+            app.focus = focus;
+            draw_phase(&mut app, Phase::Setup, (100, 40));
+        }
+    }
+
+    #[test]
+    fn draw_searching_in_both_progress_modes() {
+        let mut app = make_app();
+        app.pattern = "thing".into();
+        let progress = std::sync::Arc::new(crate::search::ProgressHandle::default());
+
+        // Discovery mode: total == 0 -> animated cursor branch.
+        let (_tx, rx) = mpsc::channel::<SearchMessage>();
+        draw_phase(
+            &mut app,
+            Phase::Searching {
+                rx,
+                started: Instant::now(),
+                tick: 7,
+                show_preview: false,
+                progress: progress.clone(),
+            },
+            (100, 40),
+        );
+
+        // Scanning mode: total and current populated -> real ratio bar.
+        progress
+            .total
+            .store(100, std::sync::atomic::Ordering::Relaxed);
+        progress
+            .current
+            .store(42, std::sync::atomic::Ordering::Relaxed);
+        let (_tx2, rx2) = mpsc::channel::<SearchMessage>();
+        draw_phase(
+            &mut app,
+            Phase::Searching {
+                rx: rx2,
+                started: Instant::now(),
+                tick: 12,
+                show_preview: true,
+                progress,
+            },
+            (100, 40),
+        );
+    }
+
+    #[test]
+    fn draw_results_empty_and_populated() {
+        use crate::types::{FileType, Match};
+
+        // Empty results: the "no matches" card should render.
+        {
+            let mut app = make_app();
+            app.pattern = "missing".into();
+            let mut ls = ListState::default();
+            ls.select(None);
+            draw_phase(
+                &mut app,
+                Phase::Results {
+                    results: Vec::new(),
+                    stats: SearchStats::new(),
+                    show_preview: false,
+                    list_state: ls,
+                },
+                (100, 40),
+            );
+        }
+
+        // Populated results: list + preview panes.
+        {
+            let mut app = make_app();
+            app.pattern = "needle".into();
+            let matches =
+                vec![Match::new("needle".into(), "line containing needle in context".into()); 3];
+            let result =
+                SearchResult::new(PathBuf::from("/tmp/doc.txt"), FileType::Text, matches, 2048);
+            let mut stats = SearchStats::new();
+            stats.add_result(&result);
+            stats.duration_ms = 321;
+            let mut ls = ListState::default();
+            ls.select(Some(0));
+            draw_phase(
+                &mut app,
+                Phase::Results {
+                    results: vec![result],
+                    stats,
+                    show_preview: true,
+                    list_state: ls,
+                },
+                (120, 40),
+            );
+        }
+    }
+
+    #[test]
+    fn toast_is_drawn_when_set() {
+        let mut app = make_app();
+        app.set_toast("hello toast", colors::SAGE);
+        draw_phase(&mut app, Phase::Setup, (100, 40));
+    }
+
+    // ---- Event handling --------------------------------------------------
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn handle_key_tab_cycles_focus() {
+        let mut app = make_app();
+        let start = app.focus;
+        app.handle_key(key(KeyCode::Tab));
+        assert_ne!(app.focus, start);
+    }
+
+    #[test]
+    fn handle_key_backtab_goes_backwards() {
+        let mut app = make_app();
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.focus, Focus::RunButton);
+    }
+
+    #[test]
+    fn handle_key_esc_in_setup_quits() {
+        let mut app = make_app();
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits_from_setup() {
+        let mut app = make_app();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn handle_key_typing_appends_to_pattern() {
+        let mut app = make_app();
+        app.focus = Focus::Pattern;
+        for ch in ['h', 'i'] {
+            app.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(app.pattern, "hi");
+    }
+
+    #[test]
+    fn handle_key_backspace_removes_last_char() {
+        let mut app = make_app();
+        app.focus = Focus::Pattern;
+        app.pattern = "abc".into();
+        app.handle_key(key(KeyCode::Backspace));
+        assert_eq!(app.pattern, "ab");
+    }
+
+    #[test]
+    fn handle_key_ctrl_u_clears_field() {
+        let mut app = make_app();
+        app.focus = Focus::Pattern;
+        app.pattern = "something".into();
+        app.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.pattern, "");
+    }
+
+    #[test]
+    fn handle_key_space_on_flags_toggles_current() {
+        let mut app = make_app();
+        app.focus = Focus::Flags;
+        let before = app.flags.case_sensitive;
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.flags.case_sensitive, !before);
+    }
+
+    #[test]
+    fn handle_key_updown_on_flags_moves_cursor() {
+        let mut app = make_app();
+        app.focus = Focus::Flags;
+        let start = app.flags.cursor;
+        app.handle_key(key(KeyCode::Down));
+        assert_ne!(app.flags.cursor, start);
+    }
+
+    #[test]
+    fn handle_key_left_right_cycles_ocr_engine() {
+        let mut app = make_app();
+        app.focus = Focus::OcrEnginePicker;
+        let before = app.ocr_engine;
+        app.handle_key(key(KeyCode::Right));
+        assert_ne!(app.ocr_engine, before);
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.ocr_engine, before);
+    }
+
+    #[test]
+    fn handle_key_cycles_max_depth_forward_and_back() {
+        let mut app = make_app();
+        app.focus = Focus::MaxDepth;
+        let before = app.max_depth;
+        app.handle_key(key(KeyCode::Right));
+        assert_ne!(app.max_depth, before);
+        // Cycling through all options must return to the original.
+        for _ in 1..MAX_DEPTH_OPTIONS.len() {
+            app.handle_key(key(KeyCode::Right));
+        }
+        assert_eq!(app.max_depth, before);
+    }
+
+    #[test]
+    fn handle_key_adjusts_limit_in_steps_of_five() {
+        let mut app = make_app();
+        app.focus = Focus::Limit;
+        app.limit = 20;
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.limit, 25);
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.limit, 20);
+    }
+
+    #[test]
+    fn handle_key_limit_clamps_at_upper_and_lower_bounds() {
+        let mut app = make_app();
+        app.focus = Focus::Limit;
+        app.limit = 498;
+        app.handle_key(key(KeyCode::Right));
+        assert!(app.limit <= 500);
+
+        app.limit = 2;
+        app.handle_key(key(KeyCode::Left));
+        assert!(app.limit >= 1);
+    }
+
+    #[test]
+    fn handle_key_space_on_chips_toggles_selection() {
+        let mut app = make_app();
+        app.focus = Focus::Extensions;
+        let before = app.extensions.chips[0].1;
+        app.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(app.extensions.chips[0].1, !before);
+    }
+
+    #[test]
+    fn handle_key_enter_with_empty_pattern_shows_toast() {
+        let mut app = make_app();
+        app.pattern.clear();
+        app.focus = Focus::Pattern;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(app.toast.is_some());
+        // Empty-pattern guard does not transition to the Searching phase.
+        assert!(matches!(app.phase, Phase::Setup));
+    }
+
+    #[test]
+    fn handle_key_enter_invalid_directory_warns_but_stays_in_setup() {
+        let mut app = make_app();
+        app.pattern = "needle".into();
+        app.directory = "/definitely/not/a/real/directory/xyzzy".into();
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.phase, Phase::Setup));
+        assert!(app.toast.is_some());
+        assert_eq!(app.focus, Focus::Directory);
+    }
+
+    // ---- Results event handling ------------------------------------------
+
+    fn results_phase_with(count: usize) -> (Phase, Vec<SearchResult>) {
+        use crate::types::{FileType, Match};
+        let mut rs = Vec::new();
+        for i in 0..count {
+            let ms = vec![Match::new("x".into(), format!("ctx {i}"))];
+            rs.push(SearchResult::new(
+                PathBuf::from(format!("f{i}.txt")),
+                FileType::Text,
+                ms,
+                1024,
+            ));
+        }
+        let mut ls = ListState::default();
+        if count > 0 {
+            ls.select(Some(0));
+        }
+        let phase = Phase::Results {
+            results: rs.clone(),
+            stats: SearchStats::new(),
+            show_preview: false,
+            list_state: ls,
+        };
+        (phase, rs)
+    }
+
+    #[test]
+    fn results_up_down_wraps_around() {
+        let mut app = make_app();
+        let (phase, _) = results_phase_with(3);
+        app.phase = phase;
+        // Start at 0, Up wraps to last.
+        app.handle_key(key(KeyCode::Up));
+        if let Phase::Results { list_state, .. } = &app.phase {
+            assert_eq!(list_state.selected(), Some(2));
+        } else {
+            panic!("expected Results phase");
+        }
+        // Down from last wraps to 0.
+        app.handle_key(key(KeyCode::Down));
+        if let Phase::Results { list_state, .. } = &app.phase {
+            assert_eq!(list_state.selected(), Some(0));
+        }
+    }
+
+    #[test]
+    fn results_home_end_jump_to_bounds() {
+        let mut app = make_app();
+        let (phase, _) = results_phase_with(5);
+        app.phase = phase;
+        app.handle_key(key(KeyCode::End));
+        if let Phase::Results { list_state, .. } = &app.phase {
+            assert_eq!(list_state.selected(), Some(4));
+        }
+        app.handle_key(key(KeyCode::Home));
+        if let Phase::Results { list_state, .. } = &app.phase {
+            assert_eq!(list_state.selected(), Some(0));
+        }
+    }
+
+    #[test]
+    fn results_b_returns_to_setup_preserving_form() {
+        let mut app = make_app();
+        app.pattern = "keepme".into();
+        let (phase, _) = results_phase_with(2);
+        app.phase = phase;
+        app.handle_key(key(KeyCode::Char('b')));
+        assert!(matches!(app.phase, Phase::Setup));
+        assert_eq!(app.pattern, "keepme");
+    }
+
+    #[test]
+    fn results_n_clears_pattern_and_returns_to_setup() {
+        let mut app = make_app();
+        app.pattern = "oldquery".into();
+        let (phase, _) = results_phase_with(2);
+        app.phase = phase;
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(matches!(app.phase, Phase::Setup));
+        assert_eq!(app.pattern, "");
+    }
+
+    #[test]
+    fn results_q_quits() {
+        let mut app = make_app();
+        let (phase, _) = results_phase_with(1);
+        app.phase = phase;
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn searching_esc_only_shows_toast_does_not_transition() {
+        let mut app = make_app();
+        let progress = std::sync::Arc::new(crate::search::ProgressHandle::default());
+        let (_tx, rx) = mpsc::channel::<SearchMessage>();
+        app.phase = Phase::Searching {
+            rx,
+            started: Instant::now(),
+            tick: 0,
+            show_preview: false,
+            progress,
+        };
+        app.handle_key(key(KeyCode::Esc));
+        assert!(matches!(app.phase, Phase::Searching { .. }));
+        assert!(app.toast.is_some());
+    }
+
+    #[test]
+    fn tick_transitions_to_results_when_search_done_message_arrives() {
+        let mut app = make_app();
+        let progress = std::sync::Arc::new(crate::search::ProgressHandle::default());
+        let (tx, rx) = mpsc::channel();
+        app.phase = Phase::Searching {
+            rx,
+            started: Instant::now(),
+            tick: 0,
+            show_preview: true,
+            progress,
+        };
+        tx.send(SearchMessage::Done {
+            results: Vec::new(),
+            stats: SearchStats::new(),
+        })
+        .unwrap();
+        app.tick();
+        assert!(matches!(app.phase, Phase::Results { .. }));
+    }
+
+    #[test]
+    fn tick_falls_back_to_setup_when_sender_drops_early() {
+        let mut app = make_app();
+        let progress = std::sync::Arc::new(crate::search::ProgressHandle::default());
+        let (tx, rx) = mpsc::channel::<SearchMessage>();
+        drop(tx);
+        app.phase = Phase::Searching {
+            rx,
+            started: Instant::now(),
+            tick: 0,
+            show_preview: false,
+            progress,
+        };
+        app.tick();
+        assert!(matches!(app.phase, Phase::Setup));
     }
 }

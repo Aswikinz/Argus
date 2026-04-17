@@ -910,4 +910,151 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results[0].path.to_string_lossy().ends_with("many.txt"));
     }
+
+    // ---- Progress handle + quiet mode -------------------------------------
+
+    #[test]
+    fn progress_handle_reports_total_and_current_after_search() {
+        let dir = tempdir().unwrap();
+        for i in 0..4 {
+            fs::write(dir.path().join(format!("f{i}.txt")), "needle").unwrap();
+        }
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let progress = engine.progress_handle();
+        let (_results, _stats) = engine.search();
+        // After search completes, total and current must reflect the scan.
+        assert_eq!(progress.total.load(Ordering::Relaxed), 4);
+        assert_eq!(progress.current.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn progress_handle_resets_between_runs() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        let progress = engine.progress_handle();
+
+        let _ = engine.search();
+        let after_first = progress.current.load(Ordering::Relaxed);
+        assert!(after_first > 0);
+
+        // A second search on the same engine must start from zero.
+        let _ = engine.search();
+        assert_eq!(
+            progress.current.load(Ordering::Relaxed),
+            after_first,
+            "second run should end at the same total as the first"
+        );
+    }
+
+    #[test]
+    fn set_quiet_is_respected_without_breaking_results() {
+        // Not much to assert on stderr output (it's captured by the test
+        // harness), but we can at least verify that turning quiet on doesn't
+        // break the search itself.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "needle").unwrap();
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "needle".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, IndexConfig::default()).unwrap();
+        engine.set_quiet(true);
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+    }
+
+    // ---- Index-file exclusion ---------------------------------------------
+
+    #[test]
+    fn index_file_is_never_included_in_results() {
+        // Save an index, then search for a term that appears inside the
+        // index JSON. The index file itself must not show up as a match.
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("hit.txt"), "distinctive-token payload").unwrap();
+
+        let save_cfg = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "distinctive-token".into(),
+            ..Default::default()
+        };
+        let index_config = IndexConfig {
+            save_index: true,
+            use_index: false,
+            index_file: None, // default .argus_index.json in the search dir
+        };
+        let mut engine = SearchEngine::new(save_cfg.clone(), index_config.clone()).unwrap();
+        let (results, _) = engine.search();
+        assert_eq!(results.len(), 1);
+        assert!(dir.path().join(".argus_index.json").exists());
+
+        // Second run: with --hidden the index file would normally be scanned.
+        // The dedicated exclusion must still remove it.
+        let second_cfg = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "distinctive-token".into(),
+            include_hidden: true,
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(second_cfg, IndexConfig::default()).unwrap();
+        let (results, _) = engine.search();
+        let paths: Vec<String> = results
+            .iter()
+            .map(|r| r.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p.ends_with(".argus_index.json")),
+            "index file should be excluded even with --hidden, got: {paths:?}",
+        );
+    }
+
+    #[test]
+    fn custom_index_file_path_is_also_excluded() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "token-x content").unwrap();
+        let custom_index = dir.path().join("my_custom.json");
+
+        let save_cfg = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "token-x".into(),
+            ..Default::default()
+        };
+        let index_config = IndexConfig {
+            save_index: true,
+            use_index: false,
+            index_file: Some(custom_index.clone()),
+        };
+        let mut engine = SearchEngine::new(save_cfg, index_config.clone()).unwrap();
+        let _ = engine.search();
+        assert!(custom_index.exists());
+
+        // Now search again with the same custom-index config — the file
+        // must not appear in the results.
+        let config = SearchConfig {
+            directory: dir.path().to_path_buf(),
+            pattern: "token-x".into(),
+            ..Default::default()
+        };
+        let mut engine = SearchEngine::new(config, index_config).unwrap();
+        let (results, _) = engine.search();
+        let paths: Vec<String> = results
+            .iter()
+            .map(|r| r.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p.ends_with("my_custom.json")),
+            "custom index file should be excluded, got: {paths:?}",
+        );
+    }
 }

@@ -109,6 +109,68 @@ fn display_stats(stats: &SearchStats) {
             .collect();
         println!("          {}", breakdown.join("   "));
     }
+
+    // Grouped-error block: mirrors what the TUI now shows. Silent skips
+    // were the worst debug surface — now the user sees exactly which
+    // backend / file / reason caused the drops.
+    display_errors(&stats.errors);
+}
+
+/// Print grouped extraction errors under the stats line. Deduplicates by
+/// message, shows the top 5 clusters with a couple of sample filenames
+/// each. No-op when there are no errors.
+fn display_errors(errors: &[(std::path::PathBuf, String)]) {
+    use std::collections::HashMap;
+
+    if errors.is_empty() {
+        return;
+    }
+
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, (usize, Vec<std::path::PathBuf>)> = HashMap::new();
+    for (path, err) in errors {
+        let key = if err.chars().count() > 180 {
+            err.chars().take(180).collect::<String>() + "…"
+        } else {
+            err.clone()
+        };
+        let entry = groups.entry(key.clone()).or_insert_with(|| {
+            order.push(key.clone());
+            (0, Vec::new())
+        });
+        entry.0 += 1;
+        if entry.1.len() < 3 {
+            entry.1.push(path.clone());
+        }
+    }
+    order.sort_by(|a, b| groups[b].0.cmp(&groups[a].0));
+
+    println!();
+    println!("  {}", palette::alert("skipped files — grouped by reason:"));
+
+    let shown = order.len().min(5);
+    for key in order.iter().take(shown) {
+        let (count, samples) = &groups[key];
+        println!(
+            "    {} {} {}",
+            palette::alert(&format!("{count}×")),
+            palette::secondary("·"),
+            palette::text(key),
+        );
+        for path in samples {
+            let display = path.file_name().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            println!("           {}", palette::tertiary(&display));
+        }
+    }
+    if order.len() > shown {
+        println!(
+            "    {}",
+            palette::secondary(&format!("+ {} more distinct error(s)", order.len() - shown)),
+        );
+    }
 }
 
 /// Format a duration (ms) into a MUJI-friendly `Nms` / `N.NNs` label.

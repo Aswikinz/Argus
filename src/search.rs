@@ -158,8 +158,12 @@ impl SearchEngine {
                 stats_guard.inc_scanned();
 
                 if let Some(ref res) = result {
-                    if res.error.is_some() {
+                    if let Some(ref err) = res.error {
                         stats_guard.inc_skipped();
+                        // Capture the actual error message so the UI can
+                        // explain *why* this file was skipped rather than
+                        // just counting it.
+                        stats_guard.record_error(res.path.clone(), err.clone());
                     } else {
                         stats_guard.add_result(res);
                     }

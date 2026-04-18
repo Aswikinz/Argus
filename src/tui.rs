@@ -1477,9 +1477,25 @@ impl App {
             .split(area);
         let content = outer[1];
 
+        // If the scan accumulated errors, reserve space at the bottom for a
+        // compact grouped-errors panel. Height = 2 (border) + 1 title + up
+        // to 3 group lines; the panel never grows beyond this so the main
+        // list/preview keeps the lion's share of the screen.
+        let errors_height: u16 = if stats.errors.is_empty() { 0 } else { 6 };
+
+        let constraints: Vec<Constraint> = if errors_height > 0 {
+            vec![
+                Constraint::Length(4),
+                Constraint::Min(0),
+                Constraint::Length(errors_height),
+            ]
+        } else {
+            vec![Constraint::Length(4), Constraint::Min(0)]
+        };
+
         let rows = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(4), Constraint::Min(0)])
+            .constraints(constraints)
             .split(content);
 
         draw_stats_bar(f, rows[0], stats, results.len(), &self.pattern);
@@ -1488,67 +1504,80 @@ impl App {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(colors::MUTED));
+                .border_style(Style::default().fg(colors::MUTED))
+                .title(Line::from(Span::styled(
+                    " no matches ",
+                    Style::default()
+                        .fg(colors::MUTED)
+                        .add_modifier(Modifier::BOLD),
+                )));
             let inner = block.inner(rows[1]);
             f.render_widget(block, rows[1]);
 
-            let mut msg_lines: Vec<Line> = vec![
-                Line::from(""),
+            let mut msg_lines: Vec<Line> = Vec::new();
+            msg_lines.push(Line::from(""));
+
+            // Main "no results" headline, slightly less shouty than before.
+            msg_lines.push(
                 Line::from(Span::styled(
-                    "no matches found",
+                    format!("no files contained “{}”", self.pattern),
                     Style::default().fg(colors::MUTED),
                 ))
                 .alignment(Alignment::Center),
-                Line::from(""),
-            ];
+            );
 
-            // If the scan skipped files, the user almost certainly wants to
-            // know why — the most common cause is an OCR backend that isn't
-            // compiled, or OCR itself being toggled off while searching an
-            // image-heavy folder. Spell both out clearly.
-            if stats.files_skipped > 0 {
-                let likely_cause = if self.flags.ocr {
+            // When files were skipped (OCR failed, backend not compiled,
+            // network error, etc.), show the real error messages grouped by
+            // cause. This is the single biggest diagnostic the user needs.
+            if !stats.errors.is_empty() {
+                msg_lines.push(Line::from(""));
+                msg_lines.push(
+                    Line::from(Span::styled(
+                        format!("{} file(s) skipped during extraction:", stats.files_skipped,),
+                        Style::default()
+                            .fg(colors::ALERT)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .alignment(Alignment::Center),
+                );
+                msg_lines.push(Line::from(""));
+                append_grouped_errors(&mut msg_lines, &stats.errors, 5, 3);
+            } else if stats.files_skipped > 0 {
+                // Files were skipped but we don't have error strings — rare,
+                // but keep the old fallback guidance.
+                msg_lines.push(Line::from(""));
+                let fallback = if self.flags.ocr {
                     format!(
-                        "the {} backend failed on {} file(s). \
-                         check the toast / rebuild with --features {}",
-                        match self.ocr_engine {
-                            OcrEngine::Tesseract => "tesseract",
-                            OcrEngine::Ocrs => "ocrs",
-                            OcrEngine::VisionLlm => "vision-llm",
-                        },
+                        "{} file(s) skipped — the {} backend returned no text",
                         stats.files_skipped,
                         match self.ocr_engine {
-                            OcrEngine::Tesseract => "ocr",
+                            OcrEngine::Tesseract => "tesseract",
                             OcrEngine::Ocrs => "ocrs",
                             OcrEngine::VisionLlm => "vision-llm",
                         },
                     )
                 } else {
                     format!(
-                        "{} file(s) were skipped — most likely images. \
-                         toggle 'OCR on images' on and re-run.",
+                        "{} file(s) skipped — most likely images. Toggle 'OCR on images' on.",
                         stats.files_skipped,
                     )
                 };
                 msg_lines.push(
-                    Line::from(Span::styled(
-                        likely_cause,
-                        Style::default().fg(colors::ALERT),
-                    ))
-                    .alignment(Alignment::Center),
+                    Line::from(Span::styled(fallback, Style::default().fg(colors::ALERT)))
+                        .alignment(Alignment::Center),
                 );
-                msg_lines.push(Line::from(""));
             }
 
+            msg_lines.push(Line::from(""));
             msg_lines.push(
                 Line::from(Span::styled(
-                    "press n to start a new search, or b to tweak your filters",
+                    "press n for a new search, b to tweak filters",
                     Style::default().fg(colors::DIM),
                 ))
                 .alignment(Alignment::Center),
             );
 
-            let msg = Paragraph::new(msg_lines);
+            let msg = Paragraph::new(msg_lines).wrap(Wrap { trim: false });
             f.render_widget(msg, inner);
             return;
         }
@@ -1617,6 +1646,13 @@ impl App {
         let selected = list_state.selected().unwrap_or(0);
         let selected_result = &results[selected];
         draw_preview_pane(f, split[1], selected_result, *show_preview);
+
+        // Errors footer: small grouped panel beneath the results when any
+        // file failed extraction. Keeps the top stats bar narrow and gives
+        // per-error detail without hijacking the screen.
+        if !stats.errors.is_empty() && rows.len() >= 3 {
+            draw_errors_footer(f, rows[2], &stats.errors, stats.files_skipped);
+        }
     }
 }
 
@@ -1792,6 +1828,105 @@ fn draw_stats_bar(
     }
 
     let p = Paragraph::new(vec![line, Line::from(breakdown)]);
+    f.render_widget(p, inner);
+}
+
+/// Group per-file errors by their message and append up to `max_groups`
+/// clusters to `out`. Each cluster gets a count, the (trimmed) error text,
+/// and up to `max_samples` example filenames. Anything beyond the cap is
+/// summarised as a single "+N more errors" line so the view stays bounded.
+fn append_grouped_errors(
+    out: &mut Vec<Line<'static>>,
+    errors: &[(PathBuf, String)],
+    max_groups: usize,
+    max_samples: usize,
+) {
+    use std::collections::HashMap;
+
+    // Preserve first-seen order so the most common / first error is top.
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, (usize, Vec<PathBuf>)> = HashMap::new();
+    for (path, err) in errors {
+        let key = truncate_display(err, 180);
+        let entry = groups.entry(key.clone()).or_insert_with(|| {
+            order.push(key.clone());
+            (0, Vec::new())
+        });
+        entry.0 += 1;
+        if entry.1.len() < max_samples {
+            entry.1.push(path.clone());
+        }
+    }
+
+    // Sort by count descending, stable — keeps earliest-seen ordering for
+    // equal counts.
+    order.sort_by(|a, b| groups[b].0.cmp(&groups[a].0));
+
+    let shown = order.len().min(max_groups);
+    for key in order.iter().take(shown) {
+        let (count, samples) = &groups[key];
+        out.push(Line::from(vec![
+            Span::styled(
+                format!("  {count} × "),
+                Style::default()
+                    .fg(colors::ALERT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(key.clone(), Style::default().fg(colors::TEXT)),
+        ]));
+        for path in samples {
+            let name = path.file_name().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            out.push(Line::from(vec![
+                Span::raw("       · "),
+                Span::styled(name, Style::default().fg(colors::DIM)),
+            ]));
+        }
+    }
+    if order.len() > shown {
+        out.push(Line::from(Span::styled(
+            format!("  + {} more distinct error(s)", order.len() - shown),
+            Style::default().fg(colors::DIM),
+        )));
+    }
+}
+
+/// Compact grouped-errors panel rendered under the Results list when any
+/// file failed extraction. Shows the top 3 distinct error messages, each
+/// with a count — without sample filenames so we fit in ~4 lines.
+fn draw_errors_footer(
+    f: &mut Frame<'_>,
+    area: Rect,
+    errors: &[(PathBuf, String)],
+    total_skipped: usize,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(colors::ALERT))
+        .title(Line::from(vec![
+            Span::styled(
+                " skipped ",
+                Style::default()
+                    .fg(colors::ALERT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("({total_skipped} file(s)) "),
+                Style::default().fg(colors::DIM),
+            ),
+        ]));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Build grouped lines (count × message) — no filename samples to keep
+    // the footer compact.
+    let mut lines: Vec<Line> = Vec::new();
+    append_grouped_errors(&mut lines, errors, 3, 0);
+
+    let p = Paragraph::new(lines).wrap(Wrap { trim: true });
     f.render_widget(p, inner);
 }
 
@@ -2558,6 +2693,83 @@ mod tests {
             assert!(matches!(app.phase, Phase::Setup));
             assert!(app.toast.is_some());
         }
+    }
+
+    #[test]
+    fn append_grouped_errors_dedupes_by_message() {
+        use std::path::PathBuf;
+        let errors = vec![
+            (PathBuf::from("a.png"), "HTTP 500: boom".to_string()),
+            (PathBuf::from("b.png"), "HTTP 500: boom".to_string()),
+            (PathBuf::from("c.png"), "HTTP 500: boom".to_string()),
+            (PathBuf::from("d.pdf"), "failed to parse PDF".to_string()),
+        ];
+        let mut out: Vec<Line<'static>> = Vec::new();
+        append_grouped_errors(&mut out, &errors, 5, 2);
+
+        // Expect one header per group (2 groups) + up to 2 samples each.
+        // "boom" group has 3 errors → header + 2 samples = 3 lines.
+        // "parse PDF" group has 1 → header + 1 sample = 2 lines.
+        // Total = 5 lines, no "+N more" trailer.
+        assert_eq!(out.len(), 5);
+        // First line should start with "3 ×" (the bigger group first).
+        let first_text: String = out[0]
+            .spans
+            .iter()
+            .map(|s| s.content.clone().into_owned())
+            .collect();
+        assert!(
+            first_text.contains("3 × "),
+            "expected '3 × ' prefix, got: {first_text:?}",
+        );
+        assert!(first_text.contains("boom"));
+    }
+
+    #[test]
+    fn append_grouped_errors_truncates_long_messages() {
+        use std::path::PathBuf;
+        let long = "x".repeat(400);
+        let errors = vec![(PathBuf::from("f.png"), long)];
+        let mut out: Vec<Line<'static>> = Vec::new();
+        append_grouped_errors(&mut out, &errors, 5, 0);
+
+        let header: String = out[0]
+            .spans
+            .iter()
+            .map(|s| s.content.clone().into_owned())
+            .collect();
+        // truncate_display caps at 180 chars + a single ellipsis.
+        assert!(
+            header.contains('…'),
+            "long error should have ellipsis: {header:?}",
+        );
+    }
+
+    #[test]
+    fn append_grouped_errors_caps_group_count() {
+        use std::path::PathBuf;
+        let errors: Vec<(PathBuf, String)> = (0..7)
+            .map(|i| {
+                (
+                    PathBuf::from(format!("f{i}.png")),
+                    format!("distinct error {i}"),
+                )
+            })
+            .collect();
+        let mut out: Vec<Line<'static>> = Vec::new();
+        append_grouped_errors(&mut out, &errors, 3, 0);
+
+        // Expect 3 group headers + one "+4 more distinct error(s)" summary.
+        assert_eq!(out.len(), 4);
+        let last: String = out[3]
+            .spans
+            .iter()
+            .map(|s| s.content.clone().into_owned())
+            .collect();
+        assert!(
+            last.contains("+ 4 more"),
+            "expected overflow summary, got: {last:?}"
+        );
     }
 
     #[test]

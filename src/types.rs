@@ -467,9 +467,19 @@ pub struct SearchStats {
     pub duration_ms: u64,
     /// Breakdown by file type.
     pub by_type: std::collections::HashMap<FileType, usize>,
+    /// Per-file extraction errors — captured so the UI can explain *why*
+    /// files were skipped instead of just counting them. Capped at
+    /// [`SearchStats::MAX_ERRORS`] entries; beyond that we keep
+    /// incrementing `files_skipped` but stop allocating strings.
+    pub errors: Vec<(PathBuf, String)>,
 }
 
 impl SearchStats {
+    /// Hard cap on stored error messages. Prevents a pathological run
+    /// against a large tree of broken PDFs from hoarding memory, while
+    /// still giving the user enough samples to group and diagnose.
+    pub const MAX_ERRORS: usize = 200;
+
     /// Create new empty stats.
     pub fn new() -> Self {
         Self::default()
@@ -492,6 +502,15 @@ impl SearchStats {
     /// Increment skipped files.
     pub fn inc_skipped(&mut self) {
         self.files_skipped += 1;
+    }
+
+    /// Record why a particular file was skipped. The UI dedupes these by
+    /// message so the same "Tesseract backend not compiled" string appearing
+    /// 1000 times only shows up once with a count.
+    pub fn record_error(&mut self, path: PathBuf, message: String) {
+        if self.errors.len() < Self::MAX_ERRORS {
+            self.errors.push((path, message));
+        }
     }
 }
 
@@ -708,6 +727,28 @@ mod tests {
         s.add_result(&result);
         assert_eq!(s.files_matched, 0);
         assert_eq!(s.total_matches, 0);
+    }
+
+    #[test]
+    fn search_stats_record_error_captures_path_and_message() {
+        let mut s = SearchStats::new();
+        s.record_error(PathBuf::from("bad.pdf"), "corrupt header".to_string());
+        assert_eq!(s.errors.len(), 1);
+        assert_eq!(s.errors[0].0, PathBuf::from("bad.pdf"));
+        assert_eq!(s.errors[0].1, "corrupt header");
+    }
+
+    #[test]
+    fn search_stats_record_error_caps_at_max_errors() {
+        // Beyond the cap we stop allocating so a pathological run against a
+        // broken tree doesn't hoard memory — but files_skipped still keeps
+        // rising (that's handled by the caller; we just verify we stop
+        // growing the vec).
+        let mut s = SearchStats::new();
+        for i in 0..(SearchStats::MAX_ERRORS + 50) {
+            s.record_error(PathBuf::from(format!("f{i}.png")), format!("error {i}"));
+        }
+        assert_eq!(s.errors.len(), SearchStats::MAX_ERRORS);
     }
 
     #[test]

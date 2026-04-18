@@ -166,6 +166,17 @@ fn max_depth_label(d: Option<usize>) -> String {
     }
 }
 
+/// Whether the given OCR backend was compiled into this binary. Used by the
+/// TUI to (a) fail fast with a clear toast when the user picks an engine
+/// that isn't built in, and (b) grey out unavailable engines in the picker.
+fn engine_available(engine: OcrEngine) -> bool {
+    match engine {
+        OcrEngine::Tesseract => cfg!(feature = "ocr"),
+        OcrEngine::Ocrs => cfg!(feature = "ocrs"),
+        OcrEngine::VisionLlm => cfg!(feature = "vision-llm"),
+    }
+}
+
 /// Rotate through the OCR engine picker options. Order mirrors the visual
 /// order of the chips in `draw_ocr_engine_box` so the cursor animation
 /// matches.
@@ -689,16 +700,47 @@ impl App {
             return;
         }
 
-        // Pre-flight check for the vision-LLM backend. If the user has
-        // selected it and OCR is on but the endpoint is unreachable, a
-        // rayon worker would discover this 120 s into the search when the
-        // first image times out. Bail right here instead.
-        #[cfg(feature = "vision-llm")]
-        if self.flags.ocr && self.ocr_engine == OcrEngine::VisionLlm {
-            if let Err(e) = crate::vision_llm_backend::ensure_ready(&self.vision_llm) {
-                self.set_toast(format!("vision-llm: {e}"), colors::ALERT);
-                self.focus = Focus::OcrEnginePicker;
-                return;
+        // Pre-flight every OCR backend before we spawn the worker thread.
+        // Without this the search silently degrades — images are counted as
+        // "skipped" but the user sees no feedback, just zero matches.
+        if self.flags.ocr {
+            match self.ocr_engine {
+                OcrEngine::Tesseract => {
+                    if !engine_available(OcrEngine::Tesseract) {
+                        self.set_toast(
+                            "Tesseract not compiled — rebuild with --features ocr",
+                            colors::ALERT,
+                        );
+                        self.focus = Focus::OcrEnginePicker;
+                        return;
+                    }
+                }
+                OcrEngine::Ocrs => {
+                    if !engine_available(OcrEngine::Ocrs) {
+                        self.set_toast(
+                            "ocrs not compiled — rebuild with --features ocrs",
+                            colors::ALERT,
+                        );
+                        self.focus = Focus::OcrEnginePicker;
+                        return;
+                    }
+                }
+                OcrEngine::VisionLlm => {
+                    if !engine_available(OcrEngine::VisionLlm) {
+                        self.set_toast(
+                            "vision-llm not compiled — rebuild with --features vision-llm",
+                            colors::ALERT,
+                        );
+                        self.focus = Focus::OcrEnginePicker;
+                        return;
+                    }
+                    #[cfg(feature = "vision-llm")]
+                    if let Err(e) = crate::vision_llm_backend::ensure_ready(&self.vision_llm) {
+                        self.set_toast(format!("vision-llm: {e}"), colors::ALERT);
+                        self.focus = Focus::OcrEnginePicker;
+                        return;
+                    }
+                }
             }
         }
 
@@ -1014,22 +1056,25 @@ impl App {
         let mut spans: Vec<Span> = vec![Span::raw(" ")];
         for (idx, (label, engine)) in options.iter().enumerate() {
             let selected = *engine == self.ocr_engine;
+            let available = engine_available(*engine);
             let marker = if selected { "●" } else { "○" };
-            let marker_color = if !enabled {
+            // Unavailable engines render dim regardless of OCR-on state, so
+            // the user sees at a glance which backends were compiled in.
+            let marker_color = if !available || !enabled {
                 colors::DIM
             } else if selected {
                 colors::ROSE
             } else {
                 colors::MUTED
             };
-            let label_color = if !enabled {
+            let label_color = if !available || !enabled {
                 colors::DIM
             } else if selected {
                 colors::TEXT
             } else {
                 colors::MUTED
             };
-            let label_mod = if selected && enabled {
+            let label_mod = if selected && enabled && available {
                 Modifier::BOLD
             } else {
                 Modifier::empty()
@@ -1040,6 +1085,14 @@ impl App {
                 label.to_string(),
                 Style::default().fg(label_color).add_modifier(label_mod),
             ));
+            if !available {
+                spans.push(Span::styled(
+                    " (not built)",
+                    Style::default()
+                        .fg(colors::ALERT)
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
             if idx + 1 < options.len() {
                 spans.push(Span::raw("  "));
             }
@@ -1438,7 +1491,8 @@ impl App {
                 .border_style(Style::default().fg(colors::MUTED));
             let inner = block.inner(rows[1]);
             f.render_widget(block, rows[1]);
-            let msg = Paragraph::new(vec![
+
+            let mut msg_lines: Vec<Line> = vec![
                 Line::from(""),
                 Line::from(Span::styled(
                     "no matches found",
@@ -1446,12 +1500,55 @@ impl App {
                 ))
                 .alignment(Alignment::Center),
                 Line::from(""),
+            ];
+
+            // If the scan skipped files, the user almost certainly wants to
+            // know why — the most common cause is an OCR backend that isn't
+            // compiled, or OCR itself being toggled off while searching an
+            // image-heavy folder. Spell both out clearly.
+            if stats.files_skipped > 0 {
+                let likely_cause = if self.flags.ocr {
+                    format!(
+                        "the {} backend failed on {} file(s). \
+                         check the toast / rebuild with --features {}",
+                        match self.ocr_engine {
+                            OcrEngine::Tesseract => "tesseract",
+                            OcrEngine::Ocrs => "ocrs",
+                            OcrEngine::VisionLlm => "vision-llm",
+                        },
+                        stats.files_skipped,
+                        match self.ocr_engine {
+                            OcrEngine::Tesseract => "ocr",
+                            OcrEngine::Ocrs => "ocrs",
+                            OcrEngine::VisionLlm => "vision-llm",
+                        },
+                    )
+                } else {
+                    format!(
+                        "{} file(s) were skipped — most likely images. \
+                         toggle 'OCR on images' on and re-run.",
+                        stats.files_skipped,
+                    )
+                };
+                msg_lines.push(
+                    Line::from(Span::styled(
+                        likely_cause,
+                        Style::default().fg(colors::ALERT),
+                    ))
+                    .alignment(Alignment::Center),
+                );
+                msg_lines.push(Line::from(""));
+            }
+
+            msg_lines.push(
                 Line::from(Span::styled(
                     "press n to start a new search, or b to tweak your filters",
                     Style::default().fg(colors::DIM),
                 ))
                 .alignment(Alignment::Center),
-            ]);
+            );
+
+            let msg = Paragraph::new(msg_lines);
             f.render_widget(msg, inner);
             return;
         }
@@ -1659,6 +1756,16 @@ fn draw_stats_bar(
         colors::SAGE,
     ));
     spans.extend(stat("hits", stats.total_matches.to_string(), colors::SKY));
+    // Skipped count: files that errored during extraction. Silent skips
+    // were the biggest source of "where did my results go?" confusion, so
+    // we surface them in red when non-zero.
+    if stats.files_skipped > 0 {
+        spans.extend(stat(
+            "skipped",
+            stats.files_skipped.to_string(),
+            colors::ALERT,
+        ));
+    }
     spans.extend(stat("showing", result_count.to_string(), colors::ACCENT));
     spans.extend(stat("in", duration, colors::MUTED));
 
@@ -2405,6 +2512,51 @@ mod tests {
                 cycle_ocr_engine(cycle_ocr_engine(engine, false), true),
                 engine,
             );
+        }
+    }
+
+    #[test]
+    fn engine_available_tracks_compile_features() {
+        // The helper must agree with the feature flags the binary was
+        // actually built with. Tests against static cfg! so the expected
+        // values flip with the feature set of this test run.
+        assert_eq!(
+            engine_available(OcrEngine::Tesseract),
+            cfg!(feature = "ocr")
+        );
+        assert_eq!(engine_available(OcrEngine::Ocrs), cfg!(feature = "ocrs"));
+        assert_eq!(
+            engine_available(OcrEngine::VisionLlm),
+            cfg!(feature = "vision-llm")
+        );
+    }
+
+    #[test]
+    fn handle_key_run_blocks_on_unavailable_engine() {
+        // When the user selects an engine that isn't compiled in, hitting
+        // Enter must bail out with a toast rather than spawning a thread
+        // that will return zero results. We exercise one branch that we
+        // know is unavailable under every CI feature matrix: if neither of
+        // the three features is enabled, Tesseract is unavailable; we
+        // pick whichever backend the current build lacks.
+        let missing = [
+            (OcrEngine::Tesseract, cfg!(feature = "ocr")),
+            (OcrEngine::Ocrs, cfg!(feature = "ocrs")),
+            (OcrEngine::VisionLlm, cfg!(feature = "vision-llm")),
+        ]
+        .into_iter()
+        .find(|(_, built)| !*built)
+        .map(|(e, _)| e);
+
+        if let Some(engine) = missing {
+            let mut app = make_app();
+            app.pattern = "needle".into();
+            app.flags.ocr = true;
+            app.ocr_engine = engine;
+            app.start_search();
+            // Still in Setup — the pre-flight aborted the run.
+            assert!(matches!(app.phase, Phase::Setup));
+            assert!(app.toast.is_some());
         }
     }
 

@@ -74,11 +74,23 @@ pub fn display_results(results: &[SearchResult], stats: &SearchStats, show_previ
 fn display_stats(stats: &SearchStats) {
     let duration = format_duration(stats.duration_ms);
 
+    // Silent skips were the biggest source of "where did my results go?"
+    // confusion — surface them inline in alert color when non-zero.
+    let skipped_segment = if stats.files_skipped > 0 {
+        format!(
+            "   skipped {}",
+            palette::alert(&stats.files_skipped.to_string())
+        )
+    } else {
+        String::new()
+    };
+
     println!(
-        "  {}   scanned {}   matched {}   {}",
+        "  {}   scanned {}   matched {}{}   {}",
         palette::secondary("stats"),
         palette::text(&stats.files_scanned.to_string()),
         palette::text(&stats.files_matched.to_string()),
+        skipped_segment,
         palette::secondary(&duration),
     );
 

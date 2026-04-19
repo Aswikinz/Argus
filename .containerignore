@@ -1,0 +1,23 @@
+# Rust build artifacts — can be gigabytes; never needed in the build context.
+target/
+debug/
+
+# Extracted binaries from podman-build.sh --extract
+dist/
+
+# Git metadata
+.git/
+.github/
+
+# IDE / editor files
+.idea/
+.vscode/
+*.rs.bk
+*.pdb
+
+# Mutation testing output
+mutants.out*/
+
+# OS files
+.DS_Store
+Thumbs.db

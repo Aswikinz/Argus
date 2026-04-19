@@ -141,6 +141,32 @@ jobs:
       - name: Build on MSRV
         run: cargo build --locked --verbose
 
+  container:
+    name: Container build - ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: no-ocr
+            features: ""
+            tag: argus:latest
+          - variant: ocr
+            features: ocr
+            tag: argus:ocr
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container image (${{ matrix.variant }})
+        run: |
+          docker build \
+            --file Containerfile \
+            --tag ${{ matrix.tag }} \
+            --build-arg FEATURES=${{ matrix.features }} \
+            .
+      - name: Smoke-test binary inside container
+        run: |
+          docker run --rm -v "$(pwd):/data" ${{ matrix.tag }} /data "fn main" | head -5
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest

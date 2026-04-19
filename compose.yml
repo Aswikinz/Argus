@@ -1,0 +1,63 @@
+# Podman Compose / Docker Compose wrapper for Argus.
+#
+# Prerequisites:
+#   podman-compose : pip install podman-compose
+#   docker compose : built into Docker Desktop
+#
+# Quick start (no OCR):
+#   podman-compose run --rm argus /data "search term"
+#   podman-compose run --rm argus              # interactive TUI
+#
+# OCR variants (use --profile to opt in):
+#   podman-compose --profile ocr  run --rm argus-ocr  /data "invoice"
+#   podman-compose --profile ocrs run --rm argus-ocrs /data "receipt"
+#
+# Override the mounted directory (defaults to current working directory):
+#   HOST_DIR=/home/user/documents podman-compose run --rm argus
+
+name: argus
+
+services:
+  argus:
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        FEATURES: ""
+    image: argus:latest
+    stdin_open: true
+    tty: true
+    volumes:
+      - type: bind
+        source: ${HOST_DIR:-.}
+        target: /data
+
+  argus-ocr:
+    profiles: [ocr]
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        FEATURES: "ocr"
+    image: argus:ocr
+    stdin_open: true
+    tty: true
+    volumes:
+      - type: bind
+        source: ${HOST_DIR:-.}
+        target: /data
+
+  argus-ocrs:
+    profiles: [ocrs]
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        FEATURES: "ocrs"
+    image: argus:ocrs
+    stdin_open: true
+    tty: true
+    volumes:
+      - type: bind
+        source: ${HOST_DIR:-.}
+        target: /data

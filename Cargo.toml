@@ -104,7 +104,7 @@ encoding_rs = "0.8"
 encoding_rs_io = "0.1"
 
 # MIME type detection
-infer = "0.15"
+infer = "0.19"
 
 [dev-dependencies]
 tempfile = "3.24"

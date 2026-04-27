@@ -45,7 +45,7 @@ dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 
 # Interactive TUI (boxed, charm-inspired dashboard used when argus is launched
 # without a pattern on a TTY).
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 
 # PDF extraction

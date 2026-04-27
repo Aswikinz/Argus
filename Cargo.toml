@@ -64,7 +64,7 @@ libc = { version = "0.2", optional = true }
 # pin both exactly to keep the `ocrs` feature buildable on MSRV.
 ocrs = { version = "=0.10.0", optional = true }
 rten = { version = "=0.16.0", optional = true }
-rten-imageproc = { version = "=0.16.0", optional = true }
+rten-imageproc = { version = "=0.24.0", optional = true }
 ureq = { version = "2.12", optional = true, default-features = false, features = ["tls"] }
 directories = { version = "5.0", optional = true }
 

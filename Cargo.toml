@@ -62,7 +62,7 @@ libc = { version = "0.2", optional = true }
 # `ocrs` 0.10.0 resolves `rten` to 0.16.0 (still edition 2021, still MSRV 1.82);
 # later rten/ocrs releases started requiring Rust 1.85+ via edition2024 so we
 # pin both exactly to keep the `ocrs` feature buildable on MSRV.
-ocrs = { version = "=0.10.0", optional = true }
+ocrs = { version = "=0.12.2", optional = true }
 rten = { version = "=0.16.0", optional = true }
 rten-imageproc = { version = "=0.16.0", optional = true }
 ureq = { version = "2.12", optional = true, default-features = false, features = ["tls"] }

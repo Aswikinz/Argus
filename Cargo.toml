@@ -52,7 +52,7 @@ crossterm = "0.28"
 pdf-extract = "0.7"
 
 # DOCX extraction (uses zip to read the archive)
-zip = "0.6"
+zip = "8.6"
 
 # Tesseract OCR (optional, gated by the `ocr` feature)
 leptess = { version = "0.14", optional = true }

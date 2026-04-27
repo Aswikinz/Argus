@@ -72,7 +72,7 @@ directories = { version = "5.0", optional = true }
 # `image`'s default features pull in `ravif`/`avif-serialize` which now
 # require Rust 1.85+ via edition 2024. Select only the formats OCR actually
 # encounters in screenshots and scanned PDFs so MSRV 1.82 still builds.
-lopdf = { version = "0.34", optional = true }
+lopdf = { version = "0.40", optional = true }
 image = { version = "0.25", default-features = false, optional = true, features = [
     "png",
     "jpeg",
